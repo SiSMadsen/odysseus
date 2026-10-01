@@ -482,6 +482,31 @@ def test_start_route_passes_approve_untrusted(session_factory, monkeypatch):
     assert calls[0]["untrusted_gate_bypassed"] is True
 
 
+def test_every_segment_gets_the_core_tools_plus_what_was_loaded(session_factory):
+    calls = []
+    script = [
+        [("tool", "load_tools", '{"names": ["resolve_contact"]}',
+          {"output": "Loaded", "loaded": ["resolve_contact"], "exit_code": 0}),
+         ("sse", {"type": "rounds_exhausted", "rounds": 30})],
+        [("text", REPORT)],
+    ]
+
+    async def run():
+        mgr = CreatorManager(session_factory=session_factory, agent_loop=scripted(script, calls))
+        job_id = mgr.start_job("t", "u", "m")
+        await _wait_finished(mgr, job_id)
+        return mgr.get_job(job_id)
+
+    job = asyncio.run(run())
+    core = set(creator_mode.CREATOR_CORE_TOOLS)
+    assert calls[0]["relevant_tools"] == core and calls[0]["forced_tools"] == core
+    assert calls[1]["relevant_tools"] == core | {"resolve_contact"}
+    assert calls[1]["forced_tools"] == core | {"resolve_contact"}
+    assert job["state"]["loaded_tools"] == ["resolve_contact"]
+    # load_tools isn't a command; it stays out of the report's command list.
+    assert job["state"]["report"]["commands"] == []
+
+
 def test_deny_does_not_run_the_action(session_factory):
     calls, executed = [], []
     script = [[_approval_card("rm -rf /etc/nginx")], [("text", REPORT)]]

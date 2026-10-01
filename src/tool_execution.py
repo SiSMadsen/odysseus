@@ -1241,6 +1241,10 @@ async def _execute_tool_block_impl(
     elif tool == "trigger_research":
         desc = "trigger_research"
         result = await do_trigger_research(content, owner=owner)
+    elif tool == "load_tools":
+        from src.tool_loading import do_load_tools
+        desc = "load_tools"
+        result = do_load_tools(content, disabled_tools=disabled_tools, tool_policy=tool_policy)
     elif tool == "get_secret":
         from src.creator_secrets import do_get_secret
         desc = "get_secret"

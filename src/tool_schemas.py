@@ -1064,6 +1064,20 @@ FUNCTION_TOOL_SCHEMAS = [
     {
         "type": "function",
         "function": {
+            "name": "load_tools",
+            "description": "Your tool list for this turn is a selection. If you need a tool that isn't in it (email, calendar, cookbook, settings, ...), load it here instead of giving up; it can be called from your next step. With `search` it lists matching tool names; with neither argument it lists everything loadable.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "names": {"type": "array", "items": {"type": "string"}, "description": "Exact tool names to load"},
+                    "search": {"type": "string", "description": "Word(s) to find tool names by"},
+                },
+            }
+        }
+    },
+    {
+        "type": "function",
+        "function": {
             "name": "get_secret",
             "description": "Creator mode only: get a password or token the user stored in Settings > Secrets, by name. Fails if the secret is switched off — then ask the user to switch it on. Never print the value or write it into files or reports; pass it straight to the command that needs it.",
             "parameters": {

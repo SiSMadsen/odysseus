@@ -192,6 +192,11 @@ _register(
     result_integrity=ResultIntegrity.EXTERNAL_UNTRUSTED,
 )
 _register(
+    # Only changes which tools the model is offered; no effect of its own.
+    # Loaded tools keep their own capabilities and gates.
+    {"load_tools"},
+)
+_register(
     # Creator mode Secrets section; the server checks the on/off switch.
     {"get_secret"},
     ToolEffect.READ_PRIVATE,

@@ -56,6 +56,18 @@ CREATOR_MAX_TOOL_CALLS = 2000
 # Rounds per segment. At the end of one, the next starts from a context
 # rebuilt from notes + command log (a checkpoint).
 SEGMENT_ROUNDS = 30
+# The tools every Creator segment gets, whatever the task text says: shell and
+# files, web, asking the user, secrets, and load_tools for everything else.
+# Passed to the loop as both relevant_tools (skips the per-message tool
+# search, which would otherwise run on Creator's own continuation text) and
+# forced_tools (survives the loop's later narrowing). Tools the model loads
+# with load_tools are added for the rest of the job.
+CREATOR_CORE_TOOLS = frozenset({
+    "bash", "python", "read_file", "write_file", "edit_file", "apply_patch",
+    "todowrite", "grep", "glob", "ls", "get_workspace", "manage_bg_jobs",
+    "web_search", "web_fetch",
+    "ask_user", "update_plan", "get_secret", "load_tools",
+})
 # Same command failing the same way this many times → refused from then on.
 FAILURE_LIMIT = 3
 # Creator writes its own checkpoint note every this many tool calls, so notes
@@ -121,6 +133,8 @@ and at least two options (the user can also answer in their own words). \
 Don't ask permission for routine steps.
 - Use `get_secret` to fetch stored passwords and tokens by name. Never print \
 them or write them into files, notes or the report.
+- Your tool list is a core set. If you need a tool that isn't in it (email, \
+calendar, settings, ...), call `load_tools` to load it instead of giving up.
 - Some actions need the user's OK first (protected paths, or actions after \
 reading untrusted content). The run pauses for that by itself; carry on \
 when it continues.
@@ -549,6 +563,7 @@ class CreatorManager:
             "tool_calls": live["tool_calls"],
             "segments": live["segments"],
             "gate_bypassed": live["gate_bypassed"],
+            "loaded_tools": sorted(live["loaded_tools"]),
             "deadline_at": live["deadline_at"],
         }
 
@@ -620,6 +635,7 @@ class CreatorManager:
             "notes": [], "commands": [], "failure_counts": {}, "failure_list": [],
             "refused": {}, "rounds": 0, "tool_calls": 0, "segments": 0,
             "tainted": False, "gate_bypassed": bool(approve_untrusted),
+            "loaded_tools": set(),
             "pause": None, "resume_event": None, "resume_payload": None,
             "protected_check": make_protected_action_check(protected_paths),
         }
@@ -752,7 +768,7 @@ class CreatorManager:
             call the run makes (inside the loop or approved by the user)."""
             if not isinstance(result, dict) or result.get("approval_required"):
                 return
-            if tool == "ask_user":  # a question to the user, not a command
+            if tool in ("ask_user", "load_tools"):  # not commands: they change nothing
                 return
             live["tool_calls"] += 1
             cmd = _norm_command(content)
@@ -785,6 +801,10 @@ class CreatorManager:
             """tool_result_hook for the agent loop: tracks identical failures
             and, on the third, tells the model this command is now refused."""
             record_command(tool, content, result)
+            if tool == "load_tools" and isinstance(result, dict) \
+                    and isinstance(result.get("loaded"), list):
+                # Keep them for later segments of this job too.
+                live["loaded_tools"].update(t for t in result["loaded"] if isinstance(t, str))
             if not _is_failure(result):
                 return result
             key = f"{tool}\x00{_norm_command(content)}"
@@ -864,8 +884,8 @@ class CreatorManager:
                 disabled_tools=disabled_tools,
                 workload="background",
                 protected_action_check=live["protected_check"],
-                # Always offer get_secret; tool retrieval wouldn't pick it.
-                forced_tools={"get_secret"},
+                relevant_tools=set(CREATOR_CORE_TOOLS) | live["loaded_tools"],
+                forced_tools=set(CREATOR_CORE_TOOLS) | live["loaded_tools"],
                 # Known secret values are blanked from tool results before the
                 # agent reads them (get_secret's own result excepted).
                 output_redactor=redactor.known_obj,

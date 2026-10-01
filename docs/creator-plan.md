@@ -134,18 +134,26 @@ How it works: the agent never receives the root password. It calls `run_as_root(
 ## Separate TODO: access to all tools within the same turn
 **Problem:** I get a smaller set of tools each turn than the server has switched on. When I need a tool that isn't in the set, you have to send a second message.
 
-- [ ] **[CHECK]** Find the code that picks which tools I get each turn. It isn't in the tools folder, so it is somewhere in the chat code.
-- [ ] Find out how it decides (my guess: the chat-bar toggles and the message text). I haven't confirmed that.
-- [ ] Decide on the fix. Options:
-  - Give every enabled tool on every turn (simplest, but a longer prompt costs more).
-  - Add a "load more tools" tool I can call mid-turn to pull in the ones I need.
-  - Always include a core set (shell, files, memory, teacher) and add the rest on demand.
+- [x] **[CHECK]** Find the code that picks which tools I get each turn. It's in `stream_agent_loop`, `src/agent_loop.py` around line 3875 ("RAG-based tool selection").
+- [x] Find out how it decides. Once per agent-loop call, in this order:
+  1. The caller's `relevant_tools`, if given (scheduled tasks).
+  2. Otherwise, a vector search of the tool index with the message text: the top 8 tools plus `ALWAYS_AVAILABLE` (it was only `ask_user`, `manage_memory`, `update_plan`).
+  3. If the index is slow (over 1.5 s, seen in the real Creator run) or broken, a keyword list.
+  4. Then additions: tools for topics detected in the message (files, email, web…), the chat-bar toggles (web search, browser) as `forced_tools`, document tools for an open document, a fixed "Terminus" set for coding requests in a workspace, and tools a loaded skill declares.
+
+  The guess (toggles plus message text) was right. Mid-turn, only a skill could add tools. There are 72 tools with schemas, about 15,500 tokens if all were sent; a typical turn sent 24.
+  - **Creator problem found:** each new segment ran the search on Creator's own continuation text (notes and commands), so the tool set could shift mid-run.
+- [x] Decide on the fix. **Chosen: core set + load-on-demand.**
+  - New `load_tools` tool (`src/tool_loading.py`), always available in every agent turn (added to `ALWAYS_AVAILABLE`). `{"names": [...]}` loads tools; they're offered from the model's next step, through the same path skills use. `{"search": "word"}` or `{}` lists loadable tools. Tools that are disabled or not allowed for the run (privileges, admin settings, plan mode, public users, tool policy) are refused, and the loop filters them again. Loading changes only what's offered: each tool keeps its own gates.
+  - Creator gets a fixed core set every segment (`CREATOR_CORE_TOOLS`: shell and files, web, `ask_user`, `update_plan`, `get_secret`, `load_tools`), passed as both `relevant_tools` (no search on continuation text) and `forced_tools`. Tools loaded during a job stay loaded for the rest of it.
+  - Not covered: MCP tools can't be loaded this way yet. Fence-style models get a loaded tool's usage text in the `load_tools` result, not in the system prompt.
+  - Rejected: all tools every turn (about 15,500 more tokens per round, and weaker local models get confused by 70+ tools); `load_tools` alone (Creator's set would still shift between segments).
 - [x] Check the safety lock that blocks some tools after I read web pages or emails. Decide whether to keep it, loosen it, or leave it off in Creator mode.
   - **Found (first real run, 2026-10-01):** the lock is stricter than "web pages or emails". Results from the 11 local tools (`bash`, `python`, `read_file`, `ls`, `grep`, `glob`, `get_workspace`, `write_file`, `edit_file`, `apply_patch`, `manage_bg_jobs`) count as untrusted too, so a Creator run paused at its very first command. 56 tools count as outside-untrusted (web, email, other models, APIs), and 15 as trusted system tools.
   - **Decision: keep the lock (option 1 of 3).** `/api/creator/start` takes `approve_untrusted: true`, which is the pause's `approve_job` given up front, for unattended runs. It's off by default. Without it, a run pauses once at its first gated action, and one `approve_job` covers the rest. Protected paths and the secret switch apply either way.
   - **Also found (the `/var/www/html` run):** a run can be locked before any tool runs. The loop adds skills, integration descriptions, MCP tool descriptions and memories to the prompt as untrusted context (they're user-editable or come from outside), and that turns the lock on. Left as is on purpose: changing it would weaken chat too, and a Creator run would lock one step later anyway, after its first command's output. It still pauses once either way.
   - Rejected: trusting local results while gating only outside content (bash can `curl`/`git clone`, so outside text would get in as "local"), and turning the lock off for Creator (nothing would then stand between what the agent reads and what it does, which matters once Phases 5 and 6 exist).
-- [ ] Creator mode needs this fixed, since a run can't stop to wait for a second message.
+- [x] Creator mode needs this fixed, since a run can't stop to wait for a second message. Done with the above.
 
 ## Suggested build order
 Phase 0, then the "all tools in one turn" TODO (Creator depends on it), then Phases 3, 1, 2, 4, 6, 5, 7, 8. The safety net comes before anything powerful.
