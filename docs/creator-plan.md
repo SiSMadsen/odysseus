@@ -1,7 +1,30 @@
 # Creator Mode: Programming Plan
 
-Status: DRAFT. Based on reading the fork's code (deep research, agent loop, secret storage). Nothing has been built yet. Host access is decided: a helper program on the host, reached through a socket file (Phase 0, item 1, and Phase 6).
-Items marked **[CHECK]** are things I have not yet looked at, so I can't promise how big they are.
+Status (2026-10-01, branch `creator-mode`): Phases 1, 2, 3 and 4 are built, tested, and smoke-tested against a real model in the Docker container. The "all tools in one turn" TODO is done. **Next: Phase 6, step 6a (hello-only helper).** Phases 5, 7 and 8 are not started.
+Items marked **[CHECK]** are things not yet looked at, so their size isn't known.
+
+## Purpose, scope and safeguards (read this first)
+**What this is.** Creator mode is a feature of my own self-hosted Odysseus install (a fork of the open-source Odysseus app), running in Docker on my own Debian machine. I'm its only owner and administrator. It lets an AI agent that I start carry out admin tasks on this one machine for me (install a package, edit a config file, fix a web page), and report back what it did. It does the same work I'd otherwise do by hand in a terminal, with me in control.
+
+**Why it needs host access.** The agent runs inside the Odysseus container, which is deliberately sandboxed: it can't see or change the host. Useful admin work has to happen on the host. Phase 6 adds a narrow, supervised way for it to do that.
+
+**What it is not.** It's not remote access. Nothing listens on a network port. It can't be reached from other machines or the internet. It doesn't hide, doesn't install or start itself, and doesn't change its own permissions. It only acts when I start a Creator job, and I can see and stop every step.
+
+**Safeguards that already exist (Phases 1–4):**
+- **Off by default.** Creator is behind a permission (`can_use_creator`) that's off by default. Only I (the admin) have it.
+- **One job at a time**, with a hard time limit (default 60 minutes) and a stop button that also kills the running command.
+- **I approve gated actions.** A run pauses for my approval before acting on anything it read from an untrusted source, and before touching protected paths (`creator_protected_paths`, plus the app's own key and database files, which are always protected).
+- **Everything is logged.** A full audit log on disk (mode 0600) records every command, result, approval and pause, with secrets blanked out.
+- **Secrets are switched.** Each one has an on/off switch the server checks. The agent can't get a switched-off secret by asking for it.
+
+**Safeguards Phase 6 adds:**
+- **A dedicated, unprivileged user.** The helper runs as a dedicated host user (`creator`) with no sudo rights in 6a and 6b. Root is not part of Phase 6 at all; it's Phase 5, behind its own switch, and decided separately.
+- **One local socket file.** It's reachable only through a socket file in the Odysseus data folder, with strict file permissions. The helper also checks the connecting process's user ID (`SO_PEERCRED`) and refuses anyone but the container's user.
+- **No network.** No TCP/UDP listener, ever.
+- **Narrow requests.** Fixed request types only: `hello` in 6a, then `run` in 6b. Every request has a time limit and an output size limit.
+- **Its own log.** Every request and its result go to an audit log on the host that I can read.
+- **A kill switch.** Stopping the helper (`systemctl stop creator-helper`) cuts off all host access immediately. Disabling the service keeps it off.
+- **I install it.** I install and start it by hand, as a systemd unit I can read. Nothing in Odysseus can install, start or modify it.
 
 ## The idea in one paragraph
 A new mode, like Deep Research, called **Creator**. You give it a task. It works through the task using the server the way you would, keeps finding workarounds when it hits a problem, and only stops to ask you when it is truly blocked. When it finishes, it writes a report. A "Secrets" section holds passwords and tokens, each with an on/off switch. Root commands go through a server-side broker, so the agent never sees the root password.
