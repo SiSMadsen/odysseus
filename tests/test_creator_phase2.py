@@ -618,6 +618,45 @@ def test_report_fills_gaps_when_the_agent_skips_sections(session_factory):
     assert "## Other notes from the agent\n\nAll good, finished." in job["report"]
 
 
+def test_report_logs_file_writes_as_target_and_size_and_keeps_commands_exact(session_factory):
+    """From the first real run: a write_file line held the whole file."""
+    calls = []
+    body = "# Folder report\n\nTotal files: 0\n"
+    script = [[
+        ("tool", "write_file", f"/app/data/agent_workspace/report.md\n{body}", {"output": "Wrote", "exit_code": 0}),
+        ("tool", "bash", "ls -la /tmp &&\n  echo done", {"output": "done", "exit_code": 0}),
+        ("text", REPORT),
+    ]]
+
+    async def run():
+        mgr = CreatorManager(session_factory=session_factory, agent_loop=scripted(script, calls))
+        job_id = mgr.start_job("t", "u", "m")
+        await _wait_finished(mgr, job_id)
+        return mgr.get_job(job_id)
+
+    job = asyncio.run(run())
+    cmds = [c["command"] for c in job["state"]["report"]["commands"]]
+    assert cmds[0] == f"/app/data/agent_workspace/report.md (+{len(body)} chars of content)"
+    assert cmds[1] == "ls -la /tmp && echo done"
+    assert "Total files" not in job["report"]
+
+
+def test_progress_lines_are_not_repeated_under_other_notes(session_factory):
+    """From the first real run: the last PROGRESS line showed up twice."""
+    calls = []
+    script = [[("text", "PROGRESS: checked report.md\n" + REPORT)]]
+
+    async def run():
+        mgr = CreatorManager(session_factory=session_factory, agent_loop=scripted(script, calls))
+        job_id = mgr.start_job("t", "u", "m")
+        await _wait_finished(mgr, job_id)
+        return mgr.get_job(job_id)
+
+    job = asyncio.run(run())
+    assert job["report"].count("checked report.md") == 1
+    assert job["state"]["notes"][-1]["text"] == "checked report.md"
+
+
 def test_parse_report_sections_accepts_heading_variants():
     out = parse_report_sections(
         "intro\n### What Was Done\na\n## **What did not work**\nb\n# What is left\nc\nSTATUS: DONE")

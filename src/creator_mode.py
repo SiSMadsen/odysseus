@@ -263,6 +263,24 @@ def _event_from_sse(data: dict) -> Optional[dict]:
 # Failure tracking
 # ---------------------------------------------------------------------------
 
+# Tools whose input is "<target>\n<content to write>". The report logs the
+# target and size, not the whole body (found in the first real run: a
+# write_file line held the entire file, flattened onto one line).
+_CONTENT_WRITING_TOOLS = frozenset({
+    "write_file", "edit_file", "apply_patch",
+    "create_document", "update_document", "edit_document", "suggest_document",
+})
+
+
+def _command_for_log(tool: str, content: Any) -> str:
+    """The command as the report and command log show it: exact for shells
+    and most tools; target + size for tools that write a body of content."""
+    if tool in _CONTENT_WRITING_TOOLS and isinstance(content, str) and "\n" in content.strip():
+        first, rest = content.lstrip().split("\n", 1)  # size = the body as written
+        return f"{first.strip()} (+{len(rest)} chars of content)"
+    return _norm_command(content)
+
+
 def _norm_command(content: Any) -> str:
     text = content if isinstance(content, str) else json.dumps(content, sort_keys=True, default=str)
     return re.sub(r"\s+", " ", text or "").strip()
@@ -309,7 +327,9 @@ def parse_report_sections(text: str) -> Dict[str, str]:
     sections: Dict[str, List[str]] = {}
     current = "other"
     for line in (text or "").splitlines():
-        if _STATUS_RE.match(line):
+        # STATUS lines are control lines; PROGRESS lines are already in the
+        # report's notes section (they used to show up twice).
+        if _STATUS_RE.match(line) or _NOTE_RE.match(line):
             continue
         m = _HEADING_RE.match(line)
         if m:
@@ -723,7 +743,7 @@ class CreatorManager:
             ok = not _is_failure(result) and not result.get("blocked")
             entry = {
                 "n": live["tool_calls"], "at": _now_iso(), "tool": tool,
-                "command": redactor.text(_truncate(cmd, 2000)),
+                "command": redactor.text(_truncate(_command_for_log(tool, content), 2000)),
                 "exit_code": result.get("exit_code"), "ok": ok,
                 "blocked": bool(result.get("blocked")),
             }
