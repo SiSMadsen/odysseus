@@ -16,6 +16,7 @@ import * as view from './view.js';
 const API = '/api/creator';
 const OVERLAY_ID = 'creator-overlay';
 const SIDEBAR_BTN_ID = 'tool-creator-btn';
+const RAIL_BTN_ID = 'rail-creator';
 const OPTIONS_KEY = 'odysseus-creator-options';
 
 let _open = false;
@@ -77,6 +78,26 @@ function _restore() {
   const overlay = byId(OVERLAY_ID);
   if (overlay) overlay.style.display = '';
   byId(SIDEBAR_BTN_ID)?.classList.remove('minimized');
+  _setAttention(false);
+}
+
+// A pause while the window is minimized: a dot on the sidebar/rail buttons,
+// and a browser notification if you've already allowed them (this window
+// never asks for the permission).
+function _setAttention(on) {
+  [SIDEBAR_BTN_ID, RAIL_BTN_ID].forEach(id => byId(id)?.classList.toggle('creator-needs-you', !!on));
+}
+
+function _notifyPause(question) {
+  const overlay = byId(OVERLAY_ID);
+  const hidden = !overlay || overlay.style.display === 'none' || document.hidden;
+  if (!hidden) return;
+  _setAttention(true);
+  try {
+    if ('Notification' in window && Notification.permission === 'granted') {
+      new Notification('Creator is waiting for you', { body: String(question || '').slice(0, 200), tag: 'creator-pause' });
+    }
+  } catch (_) { /* notifications unavailable */ }
 }
 
 export function openPanel(jobId) {
@@ -125,6 +146,7 @@ export function closePanel() {
   }
   const btn = byId(SIDEBAR_BTN_ID);
   if (btn) btn.classList.remove('active', 'minimized');
+  _setAttention(false);
   byId(OVERLAY_ID)?.remove();
 }
 
@@ -167,6 +189,7 @@ function _buildPane(pane) {
     make('div', { id: 'creator-job-head', class: 'creator-job-head' }),
     make('div', { id: 'creator-timeline', class: 'creator-timeline', 'aria-live': 'polite' }),
     _buildComposer(),
+    _buildReplyBar(),
   ]);
 
   pane.appendChild(header);
@@ -215,6 +238,37 @@ function _buildComposer() {
       startBtn,
     ]),
   ]);
+}
+
+// The reply bar: shown instead of the composer while the job on screen is
+// paused. Approvals get their choices (plus an optional note); questions and
+// "blocked" get the agent's options and a text answer.
+function _buildReplyBar() {
+  const text = make('textarea', { id: 'creator-reply-text', class: 'creator-task creator-reply-text', rows: '2' });
+  const send = make('button', { id: 'creator-reply-send', type: 'button', class: 'creator-start-btn', text: view.sendLabel('') });
+  text.addEventListener('input', () => { send.textContent = view.sendLabel(text.value); });
+  text.addEventListener('keydown', (e) => {
+    if (e.key === 'Enter' && (e.ctrlKey || e.metaKey) && !send.hidden) { e.preventDefault(); send.click(); }
+  });
+  send.addEventListener('click', () => _sendReply({ answer: text.value }));
+  const bar = make('div', { id: 'creator-reply', class: 'creator-composer creator-reply' }, [
+    make('div', { id: 'creator-reply-notice', class: 'creator-reply-notice' }),
+    make('div', { id: 'creator-reply-choices', class: 'creator-reply-choices' }),
+    text,
+    make('div', { class: 'creator-options' }, [
+      make('span', { id: 'creator-reply-msg', class: 'creator-composer-msg', role: 'status' }),
+      send,
+    ]),
+  ]);
+  bar.hidden = true;
+  return bar;
+}
+
+function _setReplyMessage(text, isError) {
+  const msg = byId('creator-reply-msg');
+  if (!msg) return;
+  msg.textContent = text || '';
+  msg.classList.toggle('error', !!isError);
 }
 
 function _setComposerMessage(text, isError) {
@@ -290,6 +344,8 @@ export function showNewJob() {
   ]));
   const composer = byId('creator-composer');
   if (composer) composer.hidden = false;
+  const reply = byId('creator-reply');
+  if (reply) reply.hidden = true;
   _setComposerMessage('');
   byId('creator-task')?.focus();
 }
@@ -346,6 +402,8 @@ export async function selectJob(jobId) {
   _hideHistoryOnMobile();
   const composer = byId('creator-composer');
   if (composer) composer.hidden = true;
+  const reply = byId('creator-reply');
+  if (reply) reply.hidden = true;
   const timeline = byId('creator-timeline');
   timeline?.replaceChildren(make('div', { class: 'creator-loading', text: 'Loading…' }));
 
@@ -366,6 +424,7 @@ export async function selectJob(jobId) {
   _view = { token, status, events: status.events || [], report };
   _renderHead();
   _renderTimeline({ scrollToEnd: true });
+  _renderReply();
   if (view.isActive(status.status)) _startLive();
 }
 
@@ -515,12 +574,123 @@ function _onLiveEvent(event) {
     _setJobStatus(_view.status.job_id, next);
     _renderHead();
   }
+  if (event.type === 'paused') {
+    // The event has the question; the choices come from /status.
+    _view.status.pause = null;
+    _fetchPause();
+    _notifyPause(event.question);
+  } else if (event.type === 'resumed') {
+    _view.status.pause = null;
+    _setAttention(false);
+    _renderReply();
+  }
   if (!live.renderQueued) {
     live.renderQueued = true;
     requestAnimationFrame(() => {
       live.renderQueued = false;
       if (_live === live) _renderTimeline({});
     });
+  }
+}
+
+// ── Answering a pause ──────────────────────────────────────────────────
+
+async function _fetchPause() {
+  const v = _view;
+  if (!v) return;
+  try {
+    const st = await api(`${API}/status/${encodeURIComponent(v.status.job_id)}?since=${view.lastSeq(v.events)}`);
+    if (_view !== v || v.status.status !== 'paused') return;
+    v.status.pause = st.pause || null;
+    if (st.deadline_at) v.status.deadline_at = st.deadline_at;
+    _renderReply();
+  } catch (_) {
+    // The stream carries on; the next pause/resume or a reload tries again.
+  }
+}
+
+let _replyKey = null;   // which pause the reply bar was built for
+
+function _renderReply() {
+  const bar = byId('creator-reply');
+  if (!bar) return;
+  const pause = _view && _view.status.status === 'paused' ? _view.status.pause : null;
+  const controls = view.replyControls(pause);
+  if (!controls) {
+    bar.hidden = true;
+    _replyKey = null;
+    return;
+  }
+  const key = `${_view.status.job_id}|${pause.since || ''}|${pause.kind}`;
+  const text = byId('creator-reply-text');
+  const send = byId('creator-reply-send');
+  if (key !== _replyKey) {
+    // A new pause: start with an empty box. (Re-renders for the same pause
+    // keep what you've typed.)
+    _replyKey = key;
+    if (text) text.value = '';
+    _setReplyMessage('');
+  }
+  if (text) text.placeholder = controls.placeholder;
+  if (send) {
+    send.hidden = controls.mode !== 'answer';
+    send.disabled = false;
+    send.textContent = view.sendLabel(text ? text.value : '');
+  }
+  const notice = byId('creator-reply-notice');
+  if (notice) {
+    notice.textContent = controls.notice;
+    notice.hidden = !controls.notice;
+  }
+  const choices = byId('creator-reply-choices');
+  if (choices) {
+    choices.replaceChildren(...controls.buttons.map((b) => {
+      const btn = make('button', {
+        type: 'button',
+        class: controls.mode === 'approval' ? `creator-choice-btn tone-${b.tone}` : 'creator-option-chip',
+        text: b.label, title: b.hint || null,
+      });
+      btn.addEventListener('click', () => _sendReply(
+        controls.mode === 'approval'
+          ? { decision: b.decision, answer: text ? text.value : '' }
+          : { answer: b.answer },
+      ));
+      return btn;
+    }));
+    choices.hidden = !controls.buttons.length;
+  }
+  bar.hidden = false;
+}
+
+async function _sendReply(body) {
+  const v = _view;
+  if (!v) return;
+  const bar = byId('creator-reply');
+  const buttons = bar ? [...bar.querySelectorAll('button')] : [];
+  buttons.forEach(b => { b.disabled = true; });
+  _setReplyMessage('Sending…');
+  const payload = {};
+  if (body.decision) payload.decision = body.decision;
+  payload.answer = String(body.answer || '').trim();
+  try {
+    await api(`${API}/resume/${encodeURIComponent(v.status.job_id)}`, {
+      method: 'POST', body: JSON.stringify(payload),
+    });
+    if (_view !== v) return;
+    // The stream's "resumed" event flips the status; hide the bar now.
+    v.status.pause = null;
+    _setReplyMessage('');
+    _renderReply();
+  } catch (e) {
+    if (_view !== v) return;
+    buttons.forEach(b => { b.disabled = false; });
+    if (e.status === 409) {
+      // Not paused any more (answered elsewhere, stopped, timed out).
+      _setReplyMessage('');
+      selectJob(v.status.job_id);
+      return;
+    }
+    _setReplyMessage(e.message, true);
   }
 }
 

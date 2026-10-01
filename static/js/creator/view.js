@@ -198,3 +198,56 @@ export function timeLeft(deadlineIso, now = Date.now()) {
 export function reconnectDelay(attempt) {
   return Math.min(30000, 1000 * 2 ** Math.max(0, attempt));
 }
+
+const CHOICE_LABELS = {
+  approve_once: 'Approve once',
+  approve_job: 'Approve for this job',
+  deny: 'Deny',
+};
+
+const CHOICE_HINTS = {
+  approve_once: 'Run exactly this action, then ask again next time.',
+  approve_job: 'Run it, and stop asking at the untrusted-content check for the rest of this job. Protected paths still ask every time.',
+  deny: "Don't run it. Creator is told to find another way.",
+};
+
+/**
+ * What the reply bar offers for a pause (the `pause` object from /status).
+ *   approval:          {mode: 'approval', buttons: [{label, hint, decision, tone}], placeholder, notice}
+ *   question/blocked:  {mode: 'answer', buttons: [{label, answer}], placeholder, notice}
+ * Returns null when there's nothing to answer.
+ */
+export function replyControls(pause) {
+  if (!pause || typeof pause !== 'object') return null;
+  if (pause.kind === 'approval') {
+    const choices = Array.isArray(pause.choices) && pause.choices.length
+      ? pause.choices
+      : ['approve_once', 'deny'];
+    return {
+      mode: 'approval',
+      buttons: choices.filter(c => CHOICE_LABELS[c]).map(c => ({
+        label: CHOICE_LABELS[c], hint: CHOICE_HINTS[c], decision: c,
+        tone: c === 'deny' ? 'deny' : 'approve',
+      })),
+      placeholder: 'Optional note for Creator, sent with your choice',
+      notice: pause.protected
+        ? 'This touches a protected path, so it can only be approved one action at a time.'
+        : '',
+    };
+  }
+  const options = (Array.isArray(pause.options) ? pause.options : [])
+    .map(o => String(o || '').trim()).filter(Boolean);
+  return {
+    mode: 'answer',
+    buttons: options.map(o => ({ label: o, answer: o })),
+    placeholder: pause.kind === 'blocked'
+      ? 'Give Creator what it needs to continue…'
+      : 'Answer Creator…',
+    notice: '',
+  };
+}
+
+/** The Send button's label: an empty answer means "carry on as best you can". */
+export function sendLabel(text) {
+  return String(text || '').trim() ? 'Send' : 'Carry on without an answer';
+}

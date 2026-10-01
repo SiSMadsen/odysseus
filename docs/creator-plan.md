@@ -1,6 +1,6 @@
 # Creator Mode: Programming Plan
 
-Status (2026-10-01, branch `creator-mode`): Phases 1, 2, 3 and 4 are built, tested, and smoke-tested against a real model in the Docker container. The "all tools in one turn" TODO is done. **Now: Phase 7 (the Creator window), before Phase 6.** Steps 7a (history route), 7b (the window) and 7c (live run, Stop) are done. Phases 5, 6 and 8 are not started.
+Status (2026-10-01, branch `creator-mode`): Phases 1, 2, 3 and 4 are built, tested, and smoke-tested against a real model in the Docker container. The "all tools in one turn" TODO is done. **Now: Phase 7 (the Creator window), before Phase 6.** Steps 7a–7d are done: history route, the window, live run with Stop, and answering pauses. Phases 5, 6 and 8 are not started.
 Items marked **[CHECK]** are things not yet looked at, so their size isn't known.
 
 ## Purpose, scope and safeguards (read this first)
@@ -164,7 +164,12 @@ How it works: the agent never receives the root password. It calls `run_as_root(
   - When the stream's final message comes, the job is loaded again, now with its report. Closing the window or switching jobs ends the stream; minimizing doesn't.
   - Tested: helpers with node (`tests/test_creator_window_js.py`); the panel's live behaviour with a throwaway jsdom harness (fake API and EventSource) that isn't in the repo, since the repo has no jsdom.
   - The "Refresh" button from 7b is gone.
-- [ ] **7d: pauses.** An approval card with the choices the pause allows (no `approve_job` for protected paths), and the composer answers questions and `BLOCKED`.
+- [x] **7d: pauses.** While the job on screen is paused, the bottom bar becomes a reply bar (the timeline shows the pause itself: question and action).
+  - **Approvals:** the choices the server allows for that pause (`pause.choices`): "Approve once", "Approve for this job", "Deny". A protected path gets only "Approve once" and "Deny", with a line saying why. If `choices` is ever missing, the bar falls back to once/deny, never "for this job". The text box is an optional note sent with the choice (`answer`).
+  - **Questions / blocked:** the agent's options as buttons, plus a text answer. With the box empty, Send reads "Carry on without an answer" (the engine's "carry on as best you can").
+  - A pause that arrives live fetches `/status` for its choices. Typed text survives live redraws for the same pause; a new pause starts empty. A 409 from `/resume` (stopped, timed out or answered elsewhere) reloads the job; a 400 shows the server's message.
+  - **Attention:** a pause while the window is minimized (or the tab is hidden) puts a dot on the sidebar and rail buttons, and shows a browser notification if you've already allowed notifications for the site. The window never asks for that permission. Nothing notifies you while the window is closed: the live stream only runs while it's open or minimized.
+  - Tested: `replyControls`/`sendLabel` with node; the reply bar end to end with the jsdom harness (approve-for-job with a note, protected path, question by chip and by text, blocked with an empty answer, 409, 400, the dot and notification).
 - [x] Secrets screen (done in Phase 4: Settings > Secrets).
 - Not shown live: the model's own text between tool calls. The engine drops text deltas; only `PROGRESS:` notes, tool calls, pauses and the report reach the event log. Adding a per-round text event is possible later if the window feels too quiet.
 

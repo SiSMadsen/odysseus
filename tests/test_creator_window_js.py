@@ -146,6 +146,40 @@ def test_live_helpers():
 
 
 @needs_node
+def test_reply_controls_follow_the_pause():
+    out = _run(textwrap.dedent(f"""
+        const v = await import('{_VIEW}');
+        console.log(JSON.stringify({{
+          approval: v.replyControls({{kind: 'approval', choices: ['approve_once', 'approve_job', 'deny'], protected: false}}),
+          protectedPath: v.replyControls({{kind: 'approval', choices: ['approve_once', 'deny'], protected: true}}),
+          noChoices: v.replyControls({{kind: 'approval'}}),
+          question: v.replyControls({{kind: 'question', options: ['80', '', ' 8080 ', null]}}),
+          blocked: v.replyControls({{kind: 'blocked', options: []}}),
+          none: [v.replyControls(null), v.replyControls(undefined)],
+          send: [v.sendLabel(''), v.sendLabel('   '), v.sendLabel('yes')],
+        }}));
+    """))
+    a = out["approval"]
+    assert a["mode"] == "approval" and a["notice"] == ""
+    assert [(b["label"], b["decision"], b["tone"]) for b in a["buttons"]] == [
+        ("Approve once", "approve_once", "approve"),
+        ("Approve for this job", "approve_job", "approve"),
+        ("Deny", "deny", "deny"),
+    ]
+    # Protected paths: the server offers no approve_job, and the bar says why.
+    p = out["protectedPath"]
+    assert [b["decision"] for b in p["buttons"]] == ["approve_once", "deny"]
+    assert "protected path" in p["notice"]
+    # Missing choices fall back to the narrowest set, never approve_job.
+    assert [b["decision"] for b in out["noChoices"]["buttons"]] == ["approve_once", "deny"]
+    q = out["question"]
+    assert q["mode"] == "answer" and [b["answer"] for b in q["buttons"]] == ["80", "8080"]
+    assert out["blocked"]["buttons"] == [] and "needs" in out["blocked"]["placeholder"]
+    assert out["none"] == [None, None]
+    assert out["send"] == ["Carry on without an answer", "Carry on without an answer", "Send"]
+
+
+@needs_node
 def test_panel_module_parses():
     proc = subprocess.run(["node", "--check", str(_PANEL)], capture_output=True, text=True, timeout=30)
     assert proc.returncode == 0, proc.stderr
