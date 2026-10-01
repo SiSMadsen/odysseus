@@ -175,11 +175,16 @@ How it works: the agent never receives the root password. It calls `run_as_root(
 - Not shown live: the model's own text between tool calls. The engine drops text deltas; only `PROGRESS:` notes, tool calls, pauses and the report reach the event log. Adding a per-round text event is possible later if the window feels too quiet.
 
 ## Phase 8: Testing
-- [ ] Harmless first task: "list the files in a folder and write a report."
-- [ ] Test a task that fails on purpose, to confirm it tries workarounds.
-- [ ] Test the secret switch: switch it off and confirm `get_secret` and `run_as_root` both fail.
-- [ ] Test that a secret never shows in logs, reports or chat history.
-- [ ] Test the stop button and the time limit.
+Most of these are already covered by unit tests with a fake model. What's left is doing each once for real, through the Creator window, against a real model in the container. Rebuild, then reload the page twice (or Ctrl+Shift+R): the service worker serves the cached page first.
+
+- [ ] **Harmless first task.** New job: "List the files in /app/data/agent_workspace and write a report." Expect: the live view shows the commands as they run, it pauses once at the untrusted-content check (Approve for this job), then it finishes with a report whose "Exact commands" match the timeline. Then once more with "Approve untrusted actions up front" ticked: no pause.
+- [ ] **Fails on purpose.** "Run the command `definitely-not-a-command --version` and tell me its version." Expect: different approaches in the timeline, never the same failing command 4 times (a "Refused from now on" line if it tries), and a report that lists the failures under "What didn't work". *(Automated: `test_same_command_failing_the_same_way_three_times_is_then_refused`, `test_three_failures_rule_in_the_real_agent_loop`.)*
+- [ ] **A question.** "Ask me which file name to use, then create that file in the workspace." Expect: the reply bar shows the question (and options, if any); your answer appears in the timeline and the job continues. Try "Carry on without an answer" once too.
+- [ ] **Protected path.** Add `/etc` to `creator_protected_paths`, then: "Read /etc/hostname." Expect: only "Approve once" and "Deny", with the protected-path line. Deny once, and check it finds another way or says it's blocked. *(Automated: `test_protected_path_pause_approve_once_runs_exactly_that_action`, `test_approve_untrusted_never_lifts_protected_paths`.)*
+- [ ] **Secret switch.** Add a secret `TEST_TOKEN` (off): "Use get_secret to read TEST_TOKEN and tell me its length." Expect: refused, and it asks you or reports blocked. Switch it on and repeat: allowed. Then check the token's value appears nowhere: the timeline, the report, the audit log (`data/creator/audit/<job>.jsonl`), `data/creator/secret_access.jsonl`. *(Automated: `test_switched_off_secret_is_refused_and_value_never_returned`, `test_stored_secret_values_are_redacted_from_everything_a_run_stores`, `test_agent_loop_scrubs_tool_results_before_the_model_sees_them`.)* `run_as_root` waits for Phase 5.
+- [ ] **Stop.** "Run `sleep 600` and then report." Press Stop while it runs. Expect: status "Stopped" within a few seconds, a report, and no `sleep` left in the container (`ps aux`). *(Automated: `test_stop_cancels_running_job`, `test_stop_while_paused`.)*
+- [ ] **Time limit.** Same task with time limit 1 minute. Expect: the countdown reaches "time's up" and the job ends as "Time limit reached" with a report. *(Automated: `test_time_limit_stops_job_as_timeout`, `test_time_limit_counts_paused_time`.)*
+- [ ] **Window behaviour.** While a job runs: minimize the window and let it pause (dot on the Creator button); close and reopen (it opens on the running job); reload the page mid-run (it picks up where it was); open a finished job from the history.
 
 ## Separate TODO: access to all tools within the same turn
 **Problem:** I get a smaller set of tools each turn than the server has switched on. When I need a tool that isn't in the set, you have to send a second message.
