@@ -215,6 +215,25 @@ def _tool_output_text(data: dict) -> str:
     return output if isinstance(output, str) else json.dumps(output, default=str)
 
 
+def _sse_error_text(chunk: str) -> str:
+    """The message from an `event: error` SSE chunk, e.g.
+    'Anthropic returned HTTP 400: `temperature` is deprecated for this model.'"""
+    for line in chunk.splitlines():
+        if line.startswith("data: "):
+            try:
+                data = json.loads(line[6:])
+            except ValueError:
+                return _truncate(line[6:], 1000)
+            if isinstance(data, dict):
+                text = data.get("text") or data.get("message") or data.get("error")
+                if text:
+                    return _truncate(str(text), 1000)
+                if data.get("status"):
+                    return f"HTTP {data['status']}"
+            return _truncate(str(data), 1000)
+    return "no details from the provider"
+
+
 def _event_from_sse(data: dict) -> Optional[dict]:
     """Reduce one agent-loop SSE payload to a compact event-log entry, or None
     for events that aren't worth keeping (text deltas, metrics, ...)."""
@@ -819,6 +838,11 @@ class CreatorManager:
                 external_untrusted_context_seen=live["tainted"],
                 untrusted_gate_bypassed=live["gate_bypassed"],
             ):
+                if isinstance(chunk, str) and chunk.startswith("event: error"):
+                    # A model request that fails before producing anything
+                    # comes through as a raw SSE error event (no
+                    # agent_terminal), and the loop stops after it.
+                    raise CreatorModelError(f"The model request failed: {_sse_error_text(chunk)}")
                 if not isinstance(chunk, str) or not chunk.startswith("data: "):
                     continue
                 body = chunk[6:].strip()

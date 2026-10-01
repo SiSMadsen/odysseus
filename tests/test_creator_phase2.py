@@ -533,6 +533,28 @@ def test_failed_model_request_ends_job_as_error_not_done(session_factory):
     assert "Stopped: error" in job["report"]
 
 
+def test_raw_sse_error_on_the_first_request_ends_job_as_error(session_factory):
+    """Found in the second smoke run: a first-round provider failure arrives
+    as a raw `event: error` chunk, with no agent_terminal event."""
+    calls = []
+    raw = ('event: error\ndata: {"status": 400, "text": "Anthropic returned HTTP 400: '
+           '`temperature` is deprecated for this model.", "raw": "{}"}\n\n')
+
+    async def loop(**kw):
+        calls.append(kw)
+        yield raw
+
+    async def run():
+        mgr = CreatorManager(session_factory=session_factory, agent_loop=loop)
+        job_id = mgr.start_job("t", "u", "m")
+        await _wait_finished(mgr, job_id)
+        return mgr.get_job(job_id)
+
+    job = asyncio.run(run())
+    assert job["status"] == "error"
+    assert "temperature` is deprecated" in job["error"]
+
+
 def test_orphaned_paused_job_marked_interrupted(session_factory):
     db = session_factory()
     db.add(CreatorJob(id="cr-bbbbbbbbbbbb", owner="alice", task="t", status="paused"))
