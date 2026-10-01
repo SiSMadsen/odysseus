@@ -95,14 +95,14 @@ def test_job_runs_agent_loop_with_high_caps_and_records_report(session_factory):
 
     job = asyncio.run(run())
     assert job["status"] == "done"
-    assert job["report"] == "Listed the files."
+    assert "Listed the files." in job["report"]
     assert job["owner"] == "alice"
     assert job["finished_at"]
     assert [e["type"] for e in job["events"]] == ["round", "tool_start", "tool_output"]
     assert job["events"][2]["output"] == "a\nb"
 
     kw = calls[0]
-    assert kw["max_rounds"] == creator_mode.CREATOR_MAX_ROUNDS
+    assert kw["max_rounds"] == creator_mode.SEGMENT_ROUNDS
     assert kw["max_tool_calls"] == creator_mode.CREATOR_MAX_TOOL_CALLS
     assert kw["workload"] == "background"
     assert kw["owner"] == "alice"
@@ -145,24 +145,8 @@ def test_loop_error_marks_job_error(session_factory):
     assert "model unreachable" in job["error"]
 
 
-def test_approval_request_ends_job_as_blocked(session_factory, monkeypatch):
-    retired = []
-    monkeypatch.setattr(CreatorManager, "_retire_approval",
-                        staticmethod(lambda aid, owner, jid: retired.append(aid)))
-    chunks = [_sse({"type": "tool_output", "tool": "bash",
-                    "ask_user": {"kind": "tool_approval", "approval_id": "ap1"}}),
-              _sse({"delta": "should not be reached"})]
-
-    async def run():
-        mgr = CreatorManager(session_factory=session_factory, agent_loop=_fake_loop(chunks))
-        job_id = mgr.start_job("t", "u", "m", owner="alice")
-        await _wait_finished(mgr, job_id)
-        return mgr.get_job(job_id)
-
-    job = asyncio.run(run())
-    assert job["status"] == "blocked"
-    assert retired == ["ap1"]
-    assert job["report"] is None
+# Approval requests no longer end the job as "blocked": Phase 2 pauses it.
+# See tests/test_creator_phase2.py.
 
 
 def test_time_limit_stops_job_as_timeout(session_factory, killed_shells, monkeypatch):
@@ -178,7 +162,7 @@ def test_time_limit_stops_job_as_timeout(session_factory, killed_shells, monkeyp
     job = asyncio.run(run())
     assert job["status"] == "timeout"
     assert "1 minute" in job["error"]
-    assert job["report"] == "partial"
+    assert "partial" in job["report"]
     assert job["events"][-1]["type"] == "timeout"
     assert job["id"] in killed_shells
 
@@ -235,7 +219,7 @@ def test_audit_log_and_events_are_redacted(session_factory, tmp_path):
     assert key not in stored
     assert "sk-abcdefghijklmnopqrstuvwx" not in stored
     assert "[REDACTED]" in job["events"][-1]["output"]
-    assert job["report"] == "Your key is [REDACTED]."
+    assert "Your key is [REDACTED]." in job["report"]
 
     import os, stat
     mode = stat.S_IMODE(os.stat(tmp_path / "audit" / f"{job['id']}.jsonl").st_mode)
@@ -303,24 +287,8 @@ def test_protected_paths_reach_the_agent_loop(session_factory):
     assert calls[1]["protected_action_check"]("bash", "cat .app_key")
 
 
-def test_blocked_job_says_what_it_wanted_to_run(session_factory, tmp_path, monkeypatch):
-    monkeypatch.setattr(CreatorManager, "_retire_approval", staticmethod(lambda *a: None))
-    chunks = [_sse({"type": "tool_output", "tool": "bash", "ask_user": {
-        "kind": "tool_approval", "approval_id": "ap1",
-        "description": "Creator mode needs your OK before bash touches the protected path /etc.",
-        "action": {"tool": "bash", "content": "rm /etc/hosts"}}})]
-
-    async def run():
-        mgr = CreatorManager(session_factory=session_factory, agent_loop=_fake_loop(chunks))
-        job_id = mgr.start_job("t", "u", "m")
-        await _wait_finished(mgr, job_id)
-        return mgr.get_job(job_id)
-
-    job = asyncio.run(run())
-    assert job["status"] == "blocked"
-    assert "protected path /etc" in job["error"]
-    assert "rm /etc/hosts" in job["error"]
-    assert _audit_entries(tmp_path, job["id"])[-2]["type"] == "blocked"
+# A protected-path request now pauses the job and says what it wanted to
+# run: see test_protected_path_pause_* in tests/test_creator_phase2.py.
 
 
 def test_live_events_have_increasing_seq(session_factory):
@@ -454,7 +422,7 @@ def test_start_status_report_and_owner_scope(routed):
     st, rep = asyncio.run(run())
     assert st["status"] == "done"
     assert st["has_report"] is True
-    assert rep["report"] == "done"
+    assert "done" in rep["report"]
 
 
 def test_second_start_is_409_while_a_job_runs(session_factory, monkeypatch):

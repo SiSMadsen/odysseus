@@ -3452,6 +3452,9 @@ async def stream_agent_loop(
     defer_context_shaping: bool = False,
     protected_action_check=None,
     output_redactor=None,
+    tool_refusal_check=None,
+    tool_result_hook=None,
+    untrusted_gate_bypassed: bool = False,
 ) -> AsyncGenerator[str, None]:
     """Streaming agent loop generator.
 
@@ -3474,7 +3477,11 @@ async def stream_agent_loop(
             or messages_contain_external_untrusted_context(messages)
         ),
         approval_gate_bypassed=bool(
-            exact_approval and exact_approval.allow_remaining_actions
+            (exact_approval and exact_approval.allow_remaining_actions)
+            # Creator mode: the user approved "for the rest of this job".
+            # Like a chat task-scope approval it lifts only the untrusted-
+            # context gate; protected paths and tool policy still apply.
+            or untrusted_gate_bypassed
         ),
         delegated_credential=bool(delegated_credential),
         protected_action_check=protected_action_check,
@@ -5688,6 +5695,19 @@ async def stream_agent_loop(
                     "Tool blocked before approval by current policy: %s",
                     block.tool_type,
                 )
+            elif tool_refusal_check is not None and (
+                _refusal_reason := tool_refusal_check(block.tool_type, block.content)
+            ):
+                # Caller-side refusal (Creator mode: a command that already
+                # failed the same way 3 times). Not run, no approval card —
+                # the model gets the reason and must change approach.
+                desc = f"{block.tool_type}: BLOCKED"
+                result = {
+                    "error": _refusal_reason,
+                    "exit_code": 1,
+                    "blocked": True,
+                    "policy": "caller_refusal",
+                }
             elif not security_decision.allowed:
                 approval_document = (
                     active_document
@@ -5843,6 +5863,14 @@ async def stream_agent_loop(
                 except Exception:
                     logger.warning("output_redactor failed; withholding tool result", exc_info=True)
                     result = {"error": "Tool output withheld: redaction failed.", "exit_code": 1}
+
+            if tool_result_hook is not None:
+                # Creator mode: failure tracking. May add a notice to the
+                # result the model reads; runs after redaction.
+                try:
+                    result = tool_result_hook(block.tool_type, block.content, result)
+                except Exception:
+                    logger.warning("tool_result_hook failed; result unchanged", exc_info=True)
 
             run_security.observe_tool_result(block.tool_type, result, block.content)
 

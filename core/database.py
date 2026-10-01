@@ -837,13 +837,18 @@ class CreatorJob(Base):
     id          = Column(String, primary_key=True, index=True)
     owner       = Column(String, nullable=True, index=True)
     task        = Column(Text, nullable=False)
-    status      = Column(String, default="running")  # "running", "done", "error", "stopped", "blocked", "interrupted"
+    # "running", "paused", "done", "error", "stopped", "timeout", "limit",
+    # "interrupted" ("blocked" only on jobs from before Phase 2)
+    status      = Column(String, default="running")
     started_at  = Column(DateTime, nullable=False, default=utcnow_naive)
     finished_at = Column(DateTime, nullable=True)
     report      = Column(Text, nullable=True)
     error       = Column(Text, nullable=True)
     events      = Column(Text, nullable=True)         # JSON list of agent events (tool calls, rounds, ...)
     model       = Column(String, nullable=True)
+    # JSON: pause request, progress notes, failure tracker, command log,
+    # structured report sections (src/creator_mode.py)
+    state       = Column(Text, nullable=True)
 
     __table_args__ = (
         Index('ix_creator_jobs_owner_started', 'owner', 'started_at'),
@@ -1151,6 +1156,31 @@ def _migrate_add_model_endpoint_refresh_columns():
             conn.close()
         except Exception:
             pass
+
+def _migrate_add_creator_job_state_column():
+    """Add the JSON `state` column to creator_jobs (Creator Phase 2: pause,
+    progress notes, failure tracking, structured report)."""
+    import sqlite3
+    db_path = DATABASE_URL.replace("sqlite:///", "")
+    if not os.path.exists(db_path):
+        return
+    conn = None
+    try:
+        conn = sqlite3.connect(db_path)
+        cursor = conn.execute("PRAGMA table_info(creator_jobs)")
+        columns = [row[1] for row in cursor.fetchall()]
+        if columns and "state" not in columns:
+            conn.execute("ALTER TABLE creator_jobs ADD COLUMN state TEXT")
+            conn.commit()
+            logging.getLogger(__name__).info("Migrated: added 'state' column to creator_jobs")
+    except Exception as e:
+        logging.getLogger(__name__).warning(f"creator_jobs state migration failed: {e}")
+    finally:
+        try:
+            conn.close()
+        except Exception:
+            pass
+
 
 def _migrate_add_task_run_model_column():
     """Add model column to task_runs if it doesn't exist (records which model ran)."""
@@ -2150,6 +2180,7 @@ def init_db():
     _migrate_add_provider_auth_id_column()
     _migrate_add_supports_tools_column()
     _migrate_add_task_run_model_column()
+    _migrate_add_creator_job_state_column()
     _migrate_add_owner_column()
     _migrate_add_document_archived_column()
     _migrate_add_last_message_at_column()

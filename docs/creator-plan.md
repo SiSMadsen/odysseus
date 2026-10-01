@@ -31,12 +31,44 @@ A new mode, like Deep Research, called **Creator**. You give it a task. It works
   - The report is just the model's final text for now. Phase 2 makes it structured.
   - No UI yet (Phase 7). Use the routes directly to try it.
 
-## Phase 2: The "never give up" behaviour
-- [ ] Creator-specific instructions: "Try another approach when something fails. List what you tried. Ask the user only when blocked on something only they can give you, like a missing credential or a decision."
-- [ ] Failure tracking: if the same command fails the same way 3 times, force a different approach.
-- [ ] Progress notes written regularly, so a long run can't lose its place (and so the report is accurate).
-- [ ] Final report: what was asked, what was done, what worked, what didn't, what's left, and the exact commands run.
-- [ ] A genuine "I'm blocked" exit that pauses the job and notifies you, instead of ending it.
+## Phase 2: The "never give up" behaviour — DONE
+All in `src/creator_mode.py`, plus small hooks in `src/agent_loop.py`.
+- [x] Creator-specific instructions (`CREATOR_SYSTEM_PROMPT`). They tell the model to:
+  - try another approach when something fails,
+  - write a `PROGRESS:` line after each meaningful step (its list of what it tried),
+  - never repeat a failed command,
+  - ask only when blocked on something only you can give (a credential, a switched-off secret, access, a decision), using `ask_user`,
+  - finish with the four-heading report and a `STATUS: DONE` line, or `STATUS: BLOCKED: …`.
+- [x] Failure tracking. "The same way" means the same tool and command (whitespace ignored), the same exit code, and the same error text (numbers ignored, so pids and timings don't count).
+  - On the 3rd identical failure, the result the model reads says the command is now refused.
+  - From then on, the agent loop refuses that exact command before running it (new `tool_refusal_check` hook) and tells the model to change approach. A different error, or a changed command, is a new attempt.
+  - Failures are listed in the report, and in the context given to the model whenever the run continues.
+- [x] Progress notes. `PROGRESS:` lines are saved as they're written. Creator also writes its own checkpoint note every 10 tool calls, so notes exist even if the model writes none. Notes go to the job state, the event log and the audit log.
+  - **Checkpoints:** a run is now a series of agent-loop segments of up to 30 rounds. When one ends, the next starts from a fresh context, rebuilt from the task, the notes, the last 25 tool calls and the refused commands. That's what keeps a long run from losing its place.
+  - The whole-run caps (500 rounds, 2000 tool calls) count across segments. Reaching them ends the job as `limit`.
+- [x] Structured final report (`report` is markdown; `report_data` in `/report` has the same as data):
+  - what was asked, and the status,
+  - what was done / worked / didn't work / is left, taken from the model's headings, with a clear placeholder where it skipped one,
+  - Creator's own failure list, added under "What didn't work",
+  - **the exact commands run**, from Creator's own log (each with exit code, and marked if you approved it),
+  - the progress notes.
+
+  A run that stops early still gets a report, and "What's left" says why it stopped.
+- [x] A real pause instead of the "blocked" ending. The job pauses (status `paused`) when:
+  - a command needs approval (a protected path, or an action held back because of untrusted content), or
+  - the model calls `ask_user`, or
+  - it ends with `STATUS: BLOCKED`.
+
+  `GET /status` shows what it's waiting for (`pause`: kind, question, options, action, allowed choices), plus the notes and `deadline_at`. `POST /api/creator/resume/{id}` answers it:
+  - **Approvals** take `{"decision": "approve_once" | "approve_job" | "deny"}`. `approve_once` runs exactly that action: Creator runs it itself, with only that exact command let past the protected-path check, then continues. `approve_job` also lifts the untrusted-content gate for the rest of the job, like chat's "Allow for this task". It's **not** offered for protected paths, which are always approved one at a time. `deny` doesn't run the action, and the model is told to find another way.
+  - **Questions / blocked** take `{"answer": "..."}`. It can be empty: "carry on as best you can".
+  - Pausing and resuming are in the event log, the live stream and the audit log. A paused job still holds the one-job slot. Stop works while paused. A job left paused by a server restart is marked `interrupted`.
+- **Decision: paused time counts toward the time limit.** The limit is wall-clock for the whole run. A hard limit stays hard, and a pause nobody answers can't hold the one-job slot forever. The status shows `deadline_at`, so you can see how long you have to answer. If it runs out while paused, the job ends as `timeout`, with a report.
+- **Found while building this:** the agent loop treats any bash/python output as untrusted (`WORKSPACE_UNTRUSTED`). So after a run's first command, every later command, file write or network call needs an approval. Before Phase 2, a real Creator run would have ended as `blocked` at its second command. Now it pauses there, and `approve_job` is the way to let it run. Whether Creator should skip this gate by default belongs to the separate "safety lock" item in the all-tools TODO below. It's unchanged here.
+- Limits:
+  - **Checkpoints lose detail.** The next segment sees notes, commands and the last reply, not full earlier outputs. A model that writes poor notes works less well after a checkpoint.
+  - **Approved actions run outside the agent loop**, so they don't stream `tool_progress`.
+  - **Nothing notifies you of a pause** (no email or push). You see it in `/status`, the stream, or the Phase 7 panel.
 
 ## Phase 3: Safety net (build before anything powerful) — DONE (server side; buttons come with the Phase 7 panel)
 Safety code lives in `src/creator_safety.py`; `src/creator_mode.py` uses it.

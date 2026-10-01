@@ -253,7 +253,7 @@ def test_stored_secret_values_are_redacted_from_everything_a_run_stores(session_
     stored = json.dumps(job) + (tmp_path / "audit" / f"{job['id']}.jsonl").read_text()
     assert SECRET not in stored
     assert "switched-off-value-1" not in stored
-    assert job["report"] == "The password is [REDACTED]."
+    assert "The password is [REDACTED]." in job["report"]
 
     # And the hook the agent loop applies to tool results before the model
     # reads them blanks both values, known values only.
@@ -287,7 +287,7 @@ def test_secret_handed_out_mid_run_is_redacted_afterwards(session_factory, tmp_p
     assert job["status"] == "done", job["error"]
     stored = json.dumps(job) + (tmp_path / "audit" / f"{job['id']}.jsonl").read_text()
     assert late not in stored
-    assert job["report"] == "used [REDACTED]"
+    assert "used [REDACTED]" in job["report"]
 
 
 def test_agent_loop_scrubs_tool_results_before_the_model_sees_them(monkeypatch):

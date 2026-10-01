@@ -16,10 +16,13 @@ from pydantic import BaseModel, Field
 from core.middleware import INTERNAL_TOOL_USER
 from src.auth_helpers import require_user
 from src.creator_mode import (
+    ACTIVE_STATUSES,
     MAX_MAX_MINUTES,
     MIN_MAX_MINUTES,
     CreatorBusyError,
     CreatorManager,
+    CreatorNotPausedError,
+    CreatorResumeError,
     is_valid_job_id,
     privilege_disabled_tools,
 )
@@ -162,6 +165,7 @@ def setup_creator_routes(creator_manager: CreatorManager) -> APIRouter:
         user = _require_creator_user(request)
         job = _owned_job(job_id, user)
         events = job.get("events") or []
+        state = job.get("state") or {}
         return {
             "job_id": job["id"],
             "task": job["task"],
@@ -169,11 +173,37 @@ def setup_creator_routes(creator_manager: CreatorManager) -> APIRouter:
             "started_at": job["started_at"],
             "finished_at": job["finished_at"],
             "max_minutes": job.get("max_minutes"),
+            # The time limit runs on while paused; this is when it ends.
+            "deadline_at": state.get("deadline_at"),
             "model": job["model"],
             "error": job["error"],
+            # What the job is waiting for, when paused: kind ("approval",
+            # "question", "blocked"), question, action, and the choices
+            # /resume accepts.
+            "pause": state.get("pause") if job["status"] == "paused" else None,
+            "notes": (state.get("notes") or [])[-20:],
             "events": _events_after(events, max(0, since)),
             "has_report": bool(job.get("report")),
         }
+
+    class CreatorResumeRequest(BaseModel):
+        # Approval pauses: "approve_once", "approve_job" or "deny".
+        decision: Optional[str] = None
+        # Question / blocked pauses: your answer (may be empty). Also allowed
+        # with an approval, as an extra note to the agent.
+        answer: Optional[str] = Field(default=None, max_length=10_000)
+
+    @router.post("/api/creator/resume/{job_id}")
+    async def creator_resume(job_id: str, body: CreatorResumeRequest, request: Request):
+        """Answer or approve a paused job so it continues."""
+        user = _require_creator_user(request)
+        _owned_job(job_id, user)
+        try:
+            return creator_manager.resume_job(job_id, decision=body.decision, answer=body.answer)
+        except CreatorNotPausedError as e:
+            raise HTTPException(409, str(e))
+        except CreatorResumeError as e:
+            raise HTTPException(400, str(e))
 
     @router.get("/api/creator/stream/{job_id}")
     async def creator_stream(job_id: str, request: Request, since: int = 0):
@@ -209,7 +239,7 @@ def setup_creator_routes(creator_manager: CreatorManager) -> APIRouter:
 
     @router.post("/api/creator/stop/{job_id}")
     async def creator_stop(job_id: str, request: Request):
-        """Stop a running Creator job."""
+        """Stop a running or paused Creator job."""
         user = _require_creator_user(request)
         _owned_job(job_id, user)
         return {"stopped": creator_manager.stop_job(job_id)}
@@ -219,13 +249,17 @@ def setup_creator_routes(creator_manager: CreatorManager) -> APIRouter:
         """The final report of a finished Creator job."""
         user = _require_creator_user(request)
         job = _owned_job(job_id, user)
-        if job["status"] == "running":
-            raise HTTPException(409, "Creator job is still running")
+        if job["status"] in ACTIVE_STATUSES:
+            raise HTTPException(409, f"Creator job is still {job['status']}")
         return {
             "job_id": job["id"],
             "task": job["task"],
             "status": job["status"],
+            # Markdown: asked / done / worked / didn't work / left / exact
+            # commands / notes.
             "report": job.get("report") or "",
+            # The same, as data (older jobs: empty).
+            "report_data": (job.get("state") or {}).get("report") or {},
             "error": job["error"],
             # Where the full redacted audit log is on the server's disk.
             "audit_log": str(creator_manager.audit_log_path(job["id"])),
