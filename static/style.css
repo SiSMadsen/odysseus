@@ -41604,3 +41604,7 @@ body.settings-sidebar-resize-active {
   border-radius: 50%; background: #d4a017;
 }
 #rail-creator.creator-needs-you::after { top: 4px; right: 4px; margin-top: 0; }
+.creator-select {
+  max-width: 180px; padding: 3px 6px; border-radius: 6px; border: 1px solid var(--border);
+  background: var(--bg); color: var(--fg); font: inherit;
+}

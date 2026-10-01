@@ -156,7 +156,7 @@ How it works: the agent never receives the root password. It calls `run_as_root(
   - Left: "+ New job" and the history (status dot, first line of the task, status and age). On a phone it's behind a "Jobs" button.
   - Right: the task as your message, then progress notes, commands (expandable, with exit code and an "approved" mark), pauses and your answers, ending notices, and the report (markdown, via the chat's `mdToHtml`), with the audit log's path under it. Everything except the report goes in as text, not HTML.
   - Composer (only with "New job" selected): the task, a time limit (blank = server default, remembered), and "Approve untrusted actions up front" (not remembered: it's a per-run decision). Ctrl/Cmd+Enter starts. A 409 says a job is already running.
-  - No model picker yet: a run uses your default/chat model, the same as the API without `model`.
+  - Endpoint and model pickers (added after 7d), as in Deep Research: your enabled LLM endpoints from `/api/model-endpoints`, then that endpoint's models. "Default" sends neither, so the run uses your default/chat model. The choice is remembered.
 - [x] **7c: live run.** A running or paused job is followed over `/api/creator/stream` (SSE), starting after the last event `/status` gave.
   - New events are added as they arrive (redrawn at most once per frame). Commands you opened stay open, and the view only follows new output if you were already at the bottom. Duplicate events (by `seq`) are ignored.
   - The status pill and the history dot change on pause/resume. The header shows the time left until the hard limit (`deadline_at`, ticking every second; paused time counts), and a red **Stop** button (one click, no confirmation: it's the safety control).

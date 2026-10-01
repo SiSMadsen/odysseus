@@ -11,6 +11,7 @@
 
 import markdownModule from '../markdown.js';
 import themeModule from '../theme.js';
+import { sortModelIds } from '../modelSort.js';
 import * as view from './view.js';
 
 const API = '/api/creator';
@@ -233,6 +234,15 @@ function _buildComposer() {
   });
   if (saved.max_minutes) minutes.value = saved.max_minutes;
   task.value = _draftTask;
+  const endpoint = make('select', { id: 'creator-endpoint', class: 'creator-select' }, [
+    make('option', { value: '', text: 'Default' }),
+  ]);
+  const model = make('select', { id: 'creator-model', class: 'creator-select' }, [
+    make('option', { value: '', text: 'Default' }),
+  ]);
+  endpoint.addEventListener('change', () => { _populateModels(endpoint.value); _saveModelChoice(); });
+  model.addEventListener('change', _saveModelChoice);
+  _loadEndpoints(saved);
   const untrusted = make('input', { id: 'creator-approve-untrusted', type: 'checkbox' });
   // Deliberately not remembered: it's a per-run decision.
   const startBtn = make('button', { id: 'creator-start-btn', type: 'button', class: 'creator-start-btn', text: 'Start' });
@@ -244,6 +254,10 @@ function _buildComposer() {
   return make('div', { id: 'creator-composer', class: 'creator-composer' }, [
     task,
     make('div', { class: 'creator-options' }, [
+      make('label', { class: 'creator-option', title: 'Which of your endpoints runs the job. Default uses your default (or chat) model.' }, [
+        make('span', { text: 'Endpoint' }), endpoint,
+      ]),
+      make('label', { class: 'creator-option' }, [make('span', { text: 'Model' }), model]),
       make('label', { class: 'creator-option', title: 'Wall-clock limit for the whole run, paused time included. Blank uses the server default.' }, [
         make('span', { text: 'Time limit (min)' }), minutes,
       ]),
@@ -285,6 +299,45 @@ function _setReplyMessage(text, isError) {
   if (!msg) return;
   msg.textContent = text || '';
   msg.classList.toggle('error', !!isError);
+}
+
+// Endpoint / model choice, as in Deep Research: your enabled LLM endpoints,
+// then that endpoint's models. Remembered with the other options.
+let _endpoints = [];
+
+async function _loadEndpoints(saved) {
+  try {
+    const list = await api('/api/model-endpoints');
+    _endpoints = (Array.isArray(list) ? list : []).filter(e => e && e.is_enabled && e.model_type === 'llm');
+  } catch (_) {
+    _endpoints = [];   // Default still works
+  }
+  const sel = byId('creator-endpoint');
+  if (!sel) return;
+  _endpoints.forEach(ep => sel.appendChild(make('option', { value: ep.id, text: ep.name || ep.base_url || ep.id })));
+  if (saved && saved.endpoint_id && _endpoints.some(e => e.id === saved.endpoint_id)) {
+    sel.value = saved.endpoint_id;
+    _populateModels(saved.endpoint_id);
+    const modelSel = byId('creator-model');
+    if (modelSel && saved.model && [...modelSel.options].some(o => o.value === saved.model)) modelSel.value = saved.model;
+  }
+}
+
+function _populateModels(endpointId) {
+  const sel = byId('creator-model');
+  if (!sel) return;
+  sel.replaceChildren(make('option', { value: '', text: 'Default' }));
+  const ep = _endpoints.find(e => e.id === endpointId);
+  if (!ep || !Array.isArray(ep.models)) return;
+  sortModelIds(ep.models).forEach(m => sel.appendChild(make('option', { value: m, text: m })));
+}
+
+function _saveModelChoice() {
+  _saveOptions({
+    ..._loadOptions(),
+    endpoint_id: byId('creator-endpoint')?.value || '',
+    model: byId('creator-model')?.value || '',
+  });
 }
 
 function _setComposerMessage(text, isError) {
@@ -381,7 +434,11 @@ async function _handleStart() {
     }
     body.max_minutes = n;
   }
-  _saveOptions({ max_minutes: body.max_minutes || '' });
+  const endpointId = byId('creator-endpoint')?.value || '';
+  const model = byId('creator-model')?.value || '';
+  if (endpointId) body.endpoint_id = endpointId;
+  if (model) body.model = model;
+  _saveOptions({ ..._loadOptions(), max_minutes: body.max_minutes || '' });
 
   if (startBtn) startBtn.disabled = true;
   _setComposerMessage('Starting…');
