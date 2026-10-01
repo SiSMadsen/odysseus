@@ -797,6 +797,11 @@ class CreatorManager:
                 model=model,
                 messages=messages,
                 headers=headers,
+                # Like interactive chat: no explicit temperature, so the
+                # provider default applies. The loop's 0.3 default makes
+                # newer Claude models (e.g. claude-sonnet-5-5) return HTTP 400
+                # "temperature is deprecated" — found in the first real run.
+                temperature=None,
                 max_rounds=min(SEGMENT_ROUNDS, remaining_rounds),
                 max_tool_calls=remaining_calls,
                 session_id=job_id,

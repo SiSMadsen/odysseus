@@ -490,6 +490,27 @@ def test_time_limit_counts_paused_time(session_factory, monkeypatch):
     assert "What's left" in job["report"] and "timeout" in job["report"]
 
 
+def test_creator_sends_no_temperature_like_chat(session_factory):
+    """Found in the smoke test: the loop's 0.3 default made Anthropic return
+    400 'temperature is deprecated' for claude-sonnet-5-5."""
+    calls = []
+
+    async def run():
+        mgr = CreatorManager(session_factory=session_factory, agent_loop=scripted([], calls))
+        job_id = mgr.start_job("t", "u", "claude-sonnet-5-5")
+        await _wait_finished(mgr, job_id)
+
+    asyncio.run(run())
+    assert "temperature" in calls[0] and calls[0]["temperature"] is None
+
+
+def test_none_temperature_is_left_out_of_the_anthropic_request():
+    from src.llm_core import _build_anthropic_payload
+    payload = _build_anthropic_payload(
+        "claude-sonnet-5-5", [{"role": "user", "content": "hi"}], None, 100)
+    assert payload.get("temperature") is None
+
+
 def test_failed_model_request_ends_job_as_error_not_done(session_factory):
     """Found in the smoke test: a provider failure (agent_terminal failed)
     used to be recorded as a finished job with an empty report."""
