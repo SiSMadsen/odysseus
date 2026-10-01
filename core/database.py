@@ -850,6 +850,26 @@ class CreatorJob(Base):
     )
 
 
+class CreatorSecret(TimestampMixin, Base):
+    """A secret (password, token, ...) Creator runs can ask for with the
+    get_secret tool (src/creator_secrets.py). The value is Fernet-encrypted at
+    rest and never returned by any API; `enabled` is the on/off switch the
+    server checks before handing the value to a run."""
+    __tablename__ = "creator_secrets"
+
+    id          = Column(String, primary_key=True, index=True)
+    owner       = Column(String, nullable=True, index=True)
+    name        = Column(String, nullable=False)
+    description = Column(Text, nullable=True)
+    value       = Column(EncryptedText, nullable=False)
+    enabled     = Column(Boolean, nullable=False, default=False)
+    last_used   = Column(DateTime, nullable=True)
+
+    __table_args__ = (
+        Index('ux_creator_secrets_owner_name', 'owner', 'name', unique=True),
+    )
+
+
 class Memory(Base):
     """
     SQLAlchemy model for Memory table.

@@ -192,6 +192,11 @@ _register(
     result_integrity=ResultIntegrity.EXTERNAL_UNTRUSTED,
 )
 _register(
+    # Creator mode Secrets section; the server checks the on/off switch.
+    {"get_secret"},
+    ToolEffect.READ_PRIVATE,
+)
+_register(
     {"download_attachment"},
     ToolEffect.READ_PRIVATE,
     ToolEffect.WRITE_WORKSPACE,

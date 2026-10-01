@@ -93,23 +93,49 @@ class Redactor:
         values |= {v for k, v in os.environ.items() if is_secret_key(k)}
         return cls(values)
 
-    def text(self, value: str) -> str:
-        if not isinstance(value, str) or not value:
-            return value
+    def add(self, *values: str) -> None:
+        """Learn more secret values mid-run (e.g. one handed out by get_secret)."""
+        merged = set(self._values) | {
+            v for v in values if isinstance(v, str) and len(v) >= _MIN_SECRET_LEN
+        }
+        self._values = sorted(merged, key=len, reverse=True)
+
+    def _replace_known(self, value: str) -> str:
         for secret in self._values:
             if secret in value:
                 value = value.replace(secret, REDACTED)
+        return value
+
+    def text(self, value: str) -> str:
+        """Known values and common token shapes. For anything stored."""
+        if not isinstance(value, str) or not value:
+            return value
+        value = self._replace_known(value)
         for pattern, repl in _SECRET_PATTERNS:
             value = pattern.sub(repl, value)
         return value
 
+    def known_text(self, value: str) -> str:
+        """Known values only. For what the agent itself reads: the token-shape
+        patterns would also blank things it legitimately needs to see (a
+        config file's PASSWORD= line it is debugging, say)."""
+        if not isinstance(value, str) or not value:
+            return value
+        return self._replace_known(value)
+
     def obj(self, value: Any) -> Any:
+        return self._walk(value, self.text)
+
+    def known_obj(self, value: Any) -> Any:
+        return self._walk(value, self.known_text)
+
+    def _walk(self, value: Any, fn: Callable[[str], str]) -> Any:
         if isinstance(value, str):
-            return self.text(value)
+            return fn(value)
         if isinstance(value, dict):
-            return {k: self.obj(v) for k, v in value.items()}
+            return {k: self._walk(v, fn) for k, v in value.items()}
         if isinstance(value, list):
-            return [self.obj(v) for v in value]
+            return [self._walk(v, fn) for v in value]
         return value
 
 
@@ -178,18 +204,24 @@ class AuditLog:
         self.path = (directory or audit_dir()) / f"{job_id}.jsonl"
 
     def write(self, entry: dict) -> None:
+        append_jsonl(self.path, self.redactor.obj(entry))
+
+
+def append_jsonl(path: Path, entry: dict) -> None:
+    """Append one JSON line to a private (0600) log file in a 0700 folder.
+    Failures are logged, never raised."""
+    try:
+        path.parent.mkdir(parents=True, exist_ok=True)
         try:
-            self.path.parent.mkdir(parents=True, exist_ok=True)
-            try:
-                os.chmod(self.path.parent, 0o700)
-            except OSError:
-                pass
-            line = json.dumps(self.redactor.obj(entry), default=str, ensure_ascii=False)
-            fd = os.open(self.path, os.O_WRONLY | os.O_CREAT | os.O_APPEND, 0o600)
-            with os.fdopen(fd, "a", encoding="utf-8") as f:
-                f.write(line + "\n")
-        except Exception:
-            logger.error("Creator audit log write failed for %s", self.path, exc_info=True)
+            os.chmod(path.parent, 0o700)
+        except OSError:
+            pass
+        line = json.dumps(entry, default=str, ensure_ascii=False)
+        fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_APPEND, 0o600)
+        with os.fdopen(fd, "a", encoding="utf-8") as f:
+            f.write(line + "\n")
+    except Exception:
+        logger.error("Creator log write failed for %s", path, exc_info=True)
 
 
 # ---------------------------------------------------------------------------

@@ -26,8 +26,16 @@ from src.creator_safety import (
     kill_job_shell,
     make_protected_action_check,
 )
+from src.creator_secrets import SecretStore, secret_store_tripwire_paths
 
 logger = logging.getLogger(__name__)
+
+# The manager the app runs, so the get_secret tool can find the running job.
+_active_manager: Optional["CreatorManager"] = None
+
+
+def get_active_manager() -> Optional["CreatorManager"]:
+    return _active_manager
 
 # "Very high" caps — Creator runs are expected to take many steps. The time
 # limit and the stop route are what end a long run.
@@ -164,10 +172,14 @@ class CreatorManager:
         session_factory: Callable = SessionLocal,
         agent_loop: Optional[Callable] = None,
         audit_directory=None,
+        secret_store: Optional[SecretStore] = None,
     ):
+        global _active_manager
         self._session_factory = session_factory
         self._agent_loop = agent_loop
         self._audit_directory = audit_directory
+        self.secrets = secret_store or SecretStore(session_factory)
+        _active_manager = self
         self._tasks: Dict[str, asyncio.Task] = {}
         # Live state of running jobs, for status/stream without a DB round-trip.
         self._live: Dict[str, dict] = {}
@@ -284,6 +296,16 @@ class CreatorManager:
 
         minutes = clamp_minutes(max_minutes) if max_minutes else default_max_minutes()
         redactor = Redactor.for_run(headers)
+        # Every stored secret of this owner is scrubbed from what the run
+        # stores and from what the agent reads back — switched off or not.
+        try:
+            redactor.add(*self.secrets.all_values(owner))
+        except Exception:
+            logger.warning("Creator: could not load secrets for redaction", exc_info=True)
+        # Always protect the files that hold every secret (tripwire).
+        protected_paths = list(protected_paths or []) + [
+            p for p in secret_store_tripwire_paths() if p not in (protected_paths or [])
+        ]
         job_id = new_job_id()
         db = self._session_factory()
         try:
@@ -306,7 +328,8 @@ class CreatorManager:
             "task": task, "model": model, "max_minutes": minutes,
             "protected_paths": list(protected_paths or []),
         })
-        self._live[job_id] = {"events": [], "max_minutes": minutes, "seq": 0}
+        self._live[job_id] = {"events": [], "max_minutes": minutes, "seq": 0,
+                              "owner": owner or "", "redactor": redactor, "audit": audit}
 
         bg = asyncio.create_task(self._run(
             job_id, task, endpoint_url, model, headers or {}, owner,
@@ -317,6 +340,27 @@ class CreatorManager:
         bg.add_done_callback(lambda _t, jid=job_id: self._tasks.pop(jid, None))
         logger.info("Creator: started job %s (owner=%r, model=%s, limit=%dm)", job_id, owner, model, minutes)
         return job_id
+
+    def request_secret(self, job_id: Optional[str], owner: Optional[str], name: str) -> dict:
+        """get_secret's entry point. The run asking must be a running Creator
+        job of the same owner; then SecretStore checks the switch. An allowed
+        value is added to the run's redactor before it is returned, so it is
+        scrubbed from everything stored from here on."""
+        live = self._live.get(job_id or "") if is_valid_job_id(job_id or "") else None
+        running = (
+            live is not None
+            and self.is_running(job_id)
+            and live.get("owner", "") == (owner or "")
+        )
+        decision = self.secrets.request_secret(owner or "", name, job_id=job_id, job_running=running)
+        if live is not None and running:
+            if decision["allowed"]:
+                live["redactor"].add(decision["value"])
+            live["audit"].write({
+                "at": _now_iso(), "type": "secret_request", "name": name,
+                "allowed": decision["allowed"], "reason": decision.get("reason"),
+            })
+        return decision
 
     def stop_job(self, job_id: str) -> bool:
         task = self._tasks.get(job_id)
@@ -395,6 +439,11 @@ class CreatorManager:
                 disabled_tools=disabled_tools,
                 workload="background",
                 protected_action_check=make_protected_action_check(protected_paths),
+                # Always offer get_secret; tool retrieval wouldn't pick it.
+                forced_tools={"get_secret"},
+                # Known secret values are blanked from tool results before the
+                # agent reads them (get_secret's own result excepted).
+                output_redactor=redactor.known_obj,
             ):
                 if not isinstance(chunk, str) or not chunk.startswith("data: "):
                     continue

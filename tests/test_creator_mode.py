@@ -12,7 +12,7 @@ from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker
 
 from core.auth import ADMIN_PRIVILEGES, DEFAULT_PRIVILEGES
-from core.database import CreatorJob
+from core.database import CreatorJob, CreatorSecret
 from core.middleware import INTERNAL_TOOL_USER
 from routes import creator_routes
 from src import creator_mode
@@ -23,6 +23,7 @@ from src.creator_mode import CreatorManager
 def session_factory(tmp_path):
     engine = create_engine(f"sqlite:///{tmp_path / 'creator.db'}")
     CreatorJob.__table__.create(bind=engine)
+    CreatorSecret.__table__.create(bind=engine)
     return sessionmaker(bind=engine)
 
 
@@ -296,7 +297,10 @@ def test_protected_paths_reach_the_agent_loop(session_factory):
 
     asyncio.run(run())
     assert calls[0]["protected_action_check"]("bash", "cat /etc/x")
-    assert calls[1]["protected_action_check"] is None
+    # Without configured paths, only the always-on secret-store tripwire
+    # (Phase 4) applies.
+    assert calls[1]["protected_action_check"]("bash", "cat /etc/x") is None
+    assert calls[1]["protected_action_check"]("bash", "cat .app_key")
 
 
 def test_blocked_job_says_what_it_wanted_to_run(session_factory, tmp_path, monkeypatch):

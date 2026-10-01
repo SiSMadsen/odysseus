@@ -1064,6 +1064,20 @@ FUNCTION_TOOL_SCHEMAS = [
     {
         "type": "function",
         "function": {
+            "name": "get_secret",
+            "description": "Creator mode only: get a password or token the user stored in Settings > Secrets, by name. Fails if the secret is switched off — then ask the user to switch it on. Never print the value or write it into files or reports; pass it straight to the command that needs it.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "name": {"type": "string", "description": "Name of the secret, as listed in Settings > Secrets"},
+                },
+                "required": ["name"]
+            }
+        }
+    },
+    {
+        "type": "function",
+        "function": {
             "name": "resolve_contact",
             "description": "Look up a contact by name. Searches CardDAV address book and sent email history. Returns email addresses (when available) or phone numbers. Use when the user says 'message [name]', 'email [name]', or asks for someone's contact details.",
             "parameters": {

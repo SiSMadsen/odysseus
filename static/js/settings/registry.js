@@ -110,6 +110,12 @@ export const SETTINGS_PANELS = Object.freeze([
     group: 'account',
     keywords: ['account', 'password', 'logout'],
   }),
+  definePanel({
+    id: 'secrets',
+    label: 'Secrets',
+    group: 'account',
+    keywords: ['secrets', 'passwords', 'tokens', 'keys', 'creator'],
+  }),
 
   definePanel({
     id: 'tools',

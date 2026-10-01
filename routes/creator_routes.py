@@ -24,6 +24,7 @@ from src.creator_mode import (
     privilege_disabled_tools,
 )
 from src.creator_safety import protected_paths_from_settings
+from src.creator_secrets import SecretError
 from src.endpoint_resolver import resolve_endpoint
 
 _STREAM_POLL_S = 0.5
@@ -229,5 +230,61 @@ def setup_creator_routes(creator_manager: CreatorManager) -> APIRouter:
             # Where the full redacted audit log is on the server's disk.
             "audit_log": str(creator_manager.audit_log_path(job["id"])),
         }
+
+    # ------------------------------------------------------------------
+    # Secrets section. Values are write-only: no route ever returns one.
+    # ------------------------------------------------------------------
+
+    class SecretCreateRequest(BaseModel):
+        name: str = Field(..., min_length=1, max_length=64)
+        value: str = Field(..., min_length=1, max_length=10_000)
+        description: str = Field(default="", max_length=1_000)
+        enabled: bool = False
+
+    class SecretUpdateRequest(BaseModel):
+        name: Optional[str] = Field(default=None, min_length=1, max_length=64)
+        # Empty or missing keeps the current value.
+        value: Optional[str] = Field(default=None, max_length=10_000)
+        description: Optional[str] = Field(default=None, max_length=1_000)
+        enabled: Optional[bool] = None
+
+    def _secret_error(e: Exception):
+        raise HTTPException(400, str(e))
+
+    @router.get("/api/creator/secrets")
+    async def secrets_list(request: Request):
+        """The caller's secrets: names, descriptions, switches. No values."""
+        user = _require_creator_user(request)
+        return {"secrets": creator_manager.secrets.list(user)}
+
+    @router.post("/api/creator/secrets")
+    async def secrets_create(body: SecretCreateRequest, request: Request):
+        user = _require_creator_user(request)
+        try:
+            return creator_manager.secrets.create(
+                user, body.name, body.value, body.description, body.enabled)
+        except SecretError as e:
+            _secret_error(e)
+
+    @router.patch("/api/creator/secrets/{secret_id}")
+    async def secrets_update(secret_id: str, body: SecretUpdateRequest, request: Request):
+        """Edit a secret or flip its on/off switch."""
+        user = _require_creator_user(request)
+        try:
+            out = creator_manager.secrets.update(
+                user, secret_id, name=body.name, value=body.value,
+                description=body.description, enabled=body.enabled)
+        except SecretError as e:
+            _secret_error(e)
+        if out is None:
+            raise HTTPException(404, "Secret not found")
+        return out
+
+    @router.delete("/api/creator/secrets/{secret_id}")
+    async def secrets_delete(secret_id: str, request: Request):
+        user = _require_creator_user(request)
+        if not creator_manager.secrets.delete(user, secret_id):
+            raise HTTPException(404, "Secret not found")
+        return {"deleted": True}
 
     return router

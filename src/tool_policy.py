@@ -69,6 +69,7 @@ _COMMON_TOOL_NAMES = {
     "edit_file",
     "edit_image",
     "generate_image",
+    "get_secret",
     "glob",
     "grep",
     "list_cached_models",

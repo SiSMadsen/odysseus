@@ -72,6 +72,13 @@ function onSettingsPanelActivated(tab) {
 
   // AI endpoints are intentionally refreshed only when entering the AI panel.
   if (tab === 'ai') refreshAiModelEndpoints();
+
+  // Creator mode secrets load fresh each time the panel opens.
+  if (tab === 'secrets') {
+    import('./secrets.js')
+      .then(mod => mod.default.init())
+      .catch(err => console.warn('Secrets panel failed to load:', err));
+  }
 }
 
 function openAdminSettingsTab(tab) {

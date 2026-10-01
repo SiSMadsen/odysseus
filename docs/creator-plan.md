@@ -48,14 +48,19 @@ Safety code lives in `src/creator_safety.py`; `src/creator_mode.py` uses it.
 - [x] Only one Creator job at a time, across all users. A second start gets HTTP 409 and doesn't reveal the other job's id.
 - Known gap: when a bash command runs without tmux (tmux missing), stop kills the shell process but not processes it started in the background. tmux is in the Docker image, so this mainly matters outside Docker.
 
-## Phase 4: Secrets section
-- [ ] **[CHECK]** Read `src/secret_storage.py` properly and confirm it can hold arbitrary secrets, not just email passwords.
-- [ ] Database table: name, description, encrypted value, enabled (yes/no), last used.
-- [ ] Settings screen: add, edit, delete, and an on/off switch for each secret.
-- [ ] Agent tool `get_secret(name)`: the **server** checks the switch. If it is off, the call fails and the value never reaches the agent.
-- [ ] Every request is logged (allowed or denied).
-- [ ] Output scrubbing: any known secret value that appears in command output or chat is replaced with `[REDACTED]` before the agent sees it or it is saved.
-- [ ] Optional: "Creator may use this secret" is separate from "enabled," so some secrets can be limited to Creator runs only.
+## Phase 4: Secrets section — DONE
+- [x] **[CHECK]** Read `src/secret_storage.py` properly and confirm it can hold arbitrary secrets, not just email passwords. Findings:
+  - Yes. `encrypt(str)`/`decrypt(str)` is generic Fernet encryption, and `core/database.py` already has an `EncryptedText` column type built on it (used for endpoint keys, signatures, calendar tokens). The secrets table uses that, with nothing new needed.
+  - One key for everything, at `data/.app_key` (mode 0600), with no rotation. `decrypt` returns `""` on a wrong key or corrupt row instead of raising, so `get_secret` treats an empty value as an error.
+  - It only protects the files at rest (a stolen database or backup), not a running process. **Important:** the agent's bash tool is not sandboxed. It runs as the same user, in the same container, starting in the data folder. So an agent that sets out to can read `data/.app_key` and the database and decrypt every secret itself, switch or no switch. The switch stops a run from *being given* a secret, not from *taking* one. Decision: build as planned, add a tripwire (below), and move secrets out of the container in Phase 6.
+- [x] Database table `creator_secrets` (`CreatorSecret`): name (unique per owner), description, encrypted value, enabled (default **off**), last used.
+- [x] Settings screen: Settings > Secrets (`static/js/secrets.js`, shown only with `can_use_creator`). It can add, edit, delete, and flip each secret's on/off switch. Values are write-only: no route returns one and the screen never shows one. Leaving the value blank when editing keeps the current one. Routes: `GET/POST /api/creator/secrets`, `PATCH/DELETE /api/creator/secrets/{id}`, owner-scoped, gated by `can_use_creator`, and blocked in `app_api` (under `/api/creator`).
+- [x] Agent tool `get_secret(name)`. The **server** checks that the call comes from a running Creator job of the same owner, that the secret exists, and that its switch is on. If any check fails, the call fails with a reason and the value never reaches the agent. Switching a secret off takes effect on the next request. Every Creator run is always offered the tool (`forced_tools`). In normal chat it refuses.
+- [x] Every request is logged, allowed or denied, to `data/creator/secret_access.jsonl` (0600) and to the job's audit log. Logs hold the name and decision, never the value.
+- [x] Output scrubbing. A new `output_redactor` hook in the agent loop blanks known secret values from every tool result before the model reads it and before it's streamed or stored. `get_secret`'s own result is exempt, since handing it over is its job. Scrubbed values are all of the owner's secrets, on or off, plus any value `get_secret` handed out during the run. The model sees only known values blanked, not the token-shape patterns, so it can still read e.g. a `PASSWORD=` line it's debugging. Everything stored (events, audit log, report, error) gets the full Phase 3 redaction plus these values.
+- [x] Tripwire: `data/.app_key` and the SQLite database (and its `-wal`/`-shm`/`-journal` files) are always protected paths in every Creator run, by full path and by bare file name (the shell starts inside the data folder). A command naming them is not run, and the job ends as `blocked`. It's a tripwire, not a wall: an indirect command can still reach them.
+- [ ] Optional "Creator may use this secret" flag, separate from "enabled". Not built: Creator is currently the only thing that can use a secret, so a second switch would do the same thing as the first. Worth adding once something else can request secrets.
+- Not covered: values the *model writes into its own commands* (e.g. `curl -H "token: …"`) reach the shell unredacted, which is the point. They're blanked in the stored event log and audit log, but the tmux pane's scrollback and any files the command writes are not scrubbed.
 
 ## Phase 5: Root broker (the "run as root" idea)
 How it works: the agent never receives the root password. It calls `run_as_root(command)`. The server does the following:
