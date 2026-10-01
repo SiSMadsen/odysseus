@@ -121,6 +121,10 @@ def setup_creator_routes(creator_manager: CreatorManager) -> APIRouter:
         model: Optional[str] = None
         # Time limit for this run; defaults to the creator_max_minutes setting.
         max_minutes: Optional[int] = Field(default=None, ge=MIN_MAX_MINUTES, le=MAX_MAX_MINUTES)
+        # "approve_job" given up front: don't pause for the untrusted-content
+        # check during this run. Off by default. Protected paths and the
+        # secret switch still apply.
+        approve_untrusted: bool = False
 
     @router.post("/api/creator/start")
     async def creator_start(body: CreatorStartRequest, request: Request):
@@ -147,6 +151,7 @@ def setup_creator_routes(creator_manager: CreatorManager) -> APIRouter:
                 disabled_tools=disabled,
                 max_minutes=body.max_minutes,
                 protected_paths=protected_paths_from_settings(),
+                approve_untrusted=body.approve_untrusted,
             )
         except CreatorBusyError as e:
             # Don't reveal another user's job id; the owner can find their own.
@@ -157,6 +162,7 @@ def setup_creator_routes(creator_manager: CreatorManager) -> APIRouter:
             "status": "running",
             "model": ep_model,
             "max_minutes": job.get("max_minutes"),
+            "approve_untrusted": body.approve_untrusted,
         }
 
     @router.get("/api/creator/status/{job_id}")

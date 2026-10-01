@@ -555,7 +555,11 @@ class CreatorManager:
         disabled_tools: Optional[Set[str]] = None,
         max_minutes: Optional[int] = None,
         protected_paths: Optional[List[str]] = None,
+        approve_untrusted: bool = False,
     ) -> str:
+        """`approve_untrusted` is "approve_job" given up front: the untrusted-
+        content gate is lifted for the whole run, so it doesn't pause at its
+        first command. Protected paths and the secret switch still apply."""
         # One job at a time; a paused job still holds its task, so it counts.
         # No await between this check and registering the task below.
         if self.running_job_id() is not None:
@@ -595,6 +599,7 @@ class CreatorManager:
             "at": _now_iso(), "type": "job_start", "job_id": job_id, "owner": owner,
             "task": task, "model": model, "max_minutes": minutes,
             "protected_paths": list(protected_paths),
+            "approve_untrusted": bool(approve_untrusted),
         })
         from datetime import timedelta
         self._live[job_id] = {
@@ -603,7 +608,7 @@ class CreatorManager:
             "owner": owner or "", "redactor": redactor, "audit": audit,
             "notes": [], "commands": [], "failure_counts": {}, "failure_list": [],
             "refused": {}, "rounds": 0, "tool_calls": 0, "segments": 0,
-            "tainted": False, "gate_bypassed": False,
+            "tainted": False, "gate_bypassed": bool(approve_untrusted),
             "pause": None, "resume_event": None, "resume_payload": None,
             "protected_check": make_protected_action_check(protected_paths),
         }

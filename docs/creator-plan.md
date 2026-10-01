@@ -140,7 +140,10 @@ How it works: the agent never receives the root password. It calls `run_as_root(
   - Give every enabled tool on every turn (simplest, but a longer prompt costs more).
   - Add a "load more tools" tool I can call mid-turn to pull in the ones I need.
   - Always include a core set (shell, files, memory, teacher) and add the rest on demand.
-- [ ] Check the safety lock that blocks some tools after I read web pages or emails. Decide whether to keep it, loosen it, or leave it off in Creator mode.
+- [x] Check the safety lock that blocks some tools after I read web pages or emails. Decide whether to keep it, loosen it, or leave it off in Creator mode.
+  - **Found (first real run, 2026-10-01):** the lock is stricter than "web pages or emails". Results from the 11 local tools (`bash`, `python`, `read_file`, `ls`, `grep`, `glob`, `get_workspace`, `write_file`, `edit_file`, `apply_patch`, `manage_bg_jobs`) count as untrusted too, so a Creator run paused at its very first command. 56 tools count as outside-untrusted (web, email, other models, APIs), and 15 as trusted system tools.
+  - **Decision: keep the lock (option 1 of 3).** `/api/creator/start` takes `approve_untrusted: true`, which is the pause's `approve_job` given up front, for unattended runs. It's off by default. Without it, a run pauses once at its first gated action, and one `approve_job` covers the rest. Protected paths and the secret switch apply either way.
+  - Rejected: trusting local results while gating only outside content (bash can `curl`/`git clone`, so outside text would get in as "local"), and turning the lock off for Creator (nothing would then stand between what the agent reads and what it does, which matters once Phases 5 and 6 exist).
 - [ ] Creator mode needs this fixed, since a run can't stop to wait for a second message.
 
 ## Suggested build order

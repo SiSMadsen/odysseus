@@ -374,7 +374,7 @@ ALLOWED = {"alice": {**DEFAULT_PRIVILEGES, "can_use_creator": True},
 def test_start_requires_privilege(routed):
     _, router = routed
     start = _route(router, "/api/creator/start", "POST")
-    body = SimpleNamespace(task="do it", endpoint_id=None, model=None, max_minutes=None)
+    body = SimpleNamespace(task="do it", endpoint_id=None, model=None, max_minutes=None, approve_untrusted=False)
     with pytest.raises(HTTPException) as exc:
         asyncio.run(start(body=body, request=_request("carol", {})))
     assert exc.value.status_code == 403
@@ -383,7 +383,7 @@ def test_start_requires_privilege(routed):
 def test_privilege_check_fails_closed_when_key_missing(routed):
     _, router = routed
     start = _route(router, "/api/creator/start", "POST")
-    body = SimpleNamespace(task="do it", endpoint_id=None, model=None, max_minutes=None)
+    body = SimpleNamespace(task="do it", endpoint_id=None, model=None, max_minutes=None, approve_untrusted=False)
     legacy = {k: v for k, v in DEFAULT_PRIVILEGES.items() if k != "can_use_creator"}
     with pytest.raises(HTTPException) as exc:
         asyncio.run(start(body=body, request=_request("dave", {"dave": legacy})))
@@ -393,7 +393,7 @@ def test_privilege_check_fails_closed_when_key_missing(routed):
 def test_internal_tool_user_cannot_start(routed):
     _, router = routed
     start = _route(router, "/api/creator/start", "POST")
-    body = SimpleNamespace(task="do it", endpoint_id=None, model=None, max_minutes=None)
+    body = SimpleNamespace(task="do it", endpoint_id=None, model=None, max_minutes=None, approve_untrusted=False)
     with pytest.raises(HTTPException) as exc:
         asyncio.run(start(body=body, request=_request(INTERNAL_TOOL_USER, ALLOWED)))
     assert exc.value.status_code == 403
@@ -407,7 +407,7 @@ def test_start_status_report_and_owner_scope(routed):
     stop = _route(router, "/api/creator/stop/{job_id}", "POST")
 
     async def run():
-        out = await start(body=SimpleNamespace(task="do it", endpoint_id=None, model=None, max_minutes=None),
+        out = await start(body=SimpleNamespace(task="do it", endpoint_id=None, model=None, max_minutes=None, approve_untrusted=False),
                           request=_request("alice", ALLOWED))
         job_id = out["job_id"]
         await _wait_finished(mgr, job_id)
@@ -432,7 +432,7 @@ def test_second_start_is_409_while_a_job_runs(session_factory, monkeypatch):
     monkeypatch.setattr("src.settings.get_setting", lambda key, default=None: default)
     mgr = CreatorManager(session_factory=session_factory, agent_loop=_fake_loop([], hang=True))
     start = _route(creator_routes.setup_creator_routes(mgr), "/api/creator/start", "POST")
-    body = SimpleNamespace(task="do it", endpoint_id=None, model=None, max_minutes=5)
+    body = SimpleNamespace(task="do it", endpoint_id=None, model=None, max_minutes=5, approve_untrusted=False)
 
     async def run():
         out = await start(body=body, request=_request("alice", ALLOWED))

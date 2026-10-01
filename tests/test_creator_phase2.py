@@ -424,6 +424,64 @@ def test_untrusted_gate_approve_job_lifts_the_gate_for_later_segments(session_fa
     assert calls[1]["untrusted_gate_bypassed"] is True
 
 
+def test_approve_untrusted_at_start_lifts_the_gate_from_the_first_segment(session_factory, tmp_path):
+    calls = []
+
+    async def run():
+        mgr = CreatorManager(session_factory=session_factory, agent_loop=scripted([], calls))
+        lifted = mgr.start_job("t", "u", "m", approve_untrusted=True)
+        await _wait_finished(mgr, lifted)
+        default = mgr.start_job("t", "u", "m")
+        await _wait_finished(mgr, default)
+        return lifted, mgr.get_job(lifted)
+
+    lifted, job = asyncio.run(run())
+    assert calls[0]["untrusted_gate_bypassed"] is True
+    assert calls[1]["untrusted_gate_bypassed"] is False  # off unless asked for
+    assert job["state"]["gate_bypassed"] is True
+    start = json.loads((tmp_path / "audit" / f"{lifted}.jsonl").read_text().splitlines()[0])
+    assert start["approve_untrusted"] is True
+
+
+def test_approve_untrusted_never_lifts_protected_paths(session_factory):
+    """With the gate lifted up front, a protected path still pauses and still
+    only offers approve_once."""
+    calls = []
+
+    async def run():
+        mgr = CreatorManager(session_factory=session_factory,
+                             agent_loop=scripted([[_approval_card("rm /etc/hosts")]], calls))
+        job_id = mgr.start_job("t", "u", "m", protected_paths=["/etc"], approve_untrusted=True)
+        paused = await _wait_paused(mgr, job_id)
+        check = calls[0]["protected_action_check"]
+        mgr.stop_job(job_id)
+        await _wait_finished(mgr, job_id)
+        return paused, check
+
+    paused, check = asyncio.run(run())
+    assert check("bash", "rm /etc/hosts")  # the loop still gets the protected check
+    assert paused["state"]["pause"]["choices"] == ["approve_once", "deny"]
+
+
+def test_start_route_passes_approve_untrusted(session_factory, monkeypatch):
+    monkeypatch.setattr(creator_routes, "require_user", lambda request: request.state.current_user)
+    monkeypatch.setattr(creator_routes, "_resolve_creator_endpoint", lambda u, e, m: ("u", "m", {}))
+    monkeypatch.setattr("src.settings.get_setting", lambda key, default=None: default)
+    calls = []
+    mgr = CreatorManager(session_factory=session_factory, agent_loop=scripted([], calls))
+    start = _route(creator_routes.setup_creator_routes(mgr), "/api/creator/start", "POST")
+
+    async def run():
+        out = await start(body=SimpleNamespace(task="t", endpoint_id=None, model=None, max_minutes=None,
+                                               approve_untrusted=True), request=_request("alice"))
+        await _wait_finished(mgr, out["job_id"])
+        return out
+
+    out = asyncio.run(run())
+    assert out["approve_untrusted"] is True
+    assert calls[0]["untrusted_gate_bypassed"] is True
+
+
 def test_deny_does_not_run_the_action(session_factory):
     calls, executed = [], []
     script = [[_approval_card("rm -rf /etc/nginx")], [("text", REPORT)]]
