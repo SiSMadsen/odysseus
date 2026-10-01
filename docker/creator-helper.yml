@@ -1,0 +1,12 @@
+# Creator host helper (docs/creator-plan.md, Phase 6; host_helper/README.md).
+# Enable by setting COMPOSE_FILE in .env, AFTER installing the helper on the
+# host (so /srv/creator-helper exists and is owned by `creator`):
+#   COMPOSE_FILE=docker-compose.yml:docker/creator-helper.yml
+#
+# Mounts only the helper's socket folder, read-only: the container can connect
+# to the socket but can't replace or remove it. Kept out of /app/data on
+# purpose: the entrypoint changes the owner of everything under /app/data.
+services:
+  odysseus:
+    volumes:
+      - /srv/creator-helper:/app/host-helper:ro

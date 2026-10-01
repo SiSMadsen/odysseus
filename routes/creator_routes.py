@@ -277,6 +277,13 @@ def setup_creator_routes(creator_manager: CreatorManager) -> APIRouter:
             "audit_log": str(creator_manager.audit_log_path(job["id"])),
         }
 
+    @router.get("/api/creator/helper/hello")
+    async def creator_helper_hello(request: Request):
+        """Connection test for the host helper (Phase 6a): sends `hello`."""
+        _require_creator_user(request)
+        from src import creator_host_helper
+        return await creator_host_helper.hello()
+
     # ------------------------------------------------------------------
     # Secrets section. Values are write-only: no route ever returns one.
     # ------------------------------------------------------------------

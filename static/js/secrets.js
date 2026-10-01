@@ -173,11 +173,40 @@ async function load() {
   }
 }
 
+// Host helper connection test (Phase 6a): the server sends the helper a
+// "hello" and reports what came back.
+async function testHelper() {
+  const out = byId('helper-test-result');
+  const btn = byId('helper-test-btn');
+  if (!out) return;
+  out.className = '';
+  out.textContent = 'Testing…';
+  if (btn) btn.disabled = true;
+  try {
+    const res = await api('/api/creator/helper/hello');
+    if (res.ok) {
+      const r = res.reply || {};
+      out.className = 'admin-success';
+      out.textContent = `Connected: ${r.helper || 'helper'} v${r.version} running as ${r.user} (uid ${r.uid}); can do: ${(r.capabilities || []).join(', ')}.`;
+    } else {
+      out.className = 'admin-error';
+      out.textContent = res.error || 'Not connected.';
+    }
+  } catch (e) {
+    out.className = 'admin-error';
+    out.textContent = e.message;
+  } finally {
+    if (btn) btn.disabled = false;
+  }
+}
+
 let _bound = false;
 function init() {
   if (!_bound) {
     const add = byId('secrets-add-btn');
     if (add) add.addEventListener('click', () => openForm(null));
+    const test = byId('helper-test-btn');
+    if (test) test.addEventListener('click', testHelper);
     _bound = true;
   }
   setMessage('');
