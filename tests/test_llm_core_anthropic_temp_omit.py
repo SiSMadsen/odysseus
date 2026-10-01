@@ -36,6 +36,13 @@ from src.llm_core import _anthropic_rejects_temperature, _build_anthropic_payloa
         "claude-opus-5-20260101",  # major-only + dated snapshot
         "anthropic/claude-opus-5",  # major-only behind a provider prefix
         "claude-opus-6",  # future major-only
+        # Claude 5 generation, other families: claude-sonnet-5-5 returned HTTP
+        # 400 "`temperature` is deprecated for this model" in a live run.
+        "claude-sonnet-5-5",
+        "claude-sonnet-5",
+        "anthropic/claude-sonnet-5-5",
+        "claude-haiku-5",
+        "claude-fable-5-1",
     ],
 )
 def test_opus_47_plus_rejects_temperature(model):
@@ -60,6 +67,9 @@ def test_opus_47_plus_rejects_temperature(model):
         # what makes capping the major at 1-2 digits necessary once the minor
         # became optional in #5753).
         "claude-haiku-4-5",
+        "claude-haiku-4-5-20251001",
+        "claude-3-5-sonnet-20241022",  # date after "sonnet-" must not read as version 20
+        "claude-sonnet-4-5-20250929",
         "claude-x",
         "octopus-4-8",  # "opus" only as a substring of another word — must not match
         "myproxy/octopus-4-8",  # same, behind a provider prefix

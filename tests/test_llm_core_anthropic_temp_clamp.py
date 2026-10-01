@@ -17,7 +17,7 @@ def _temp(t):
     payload = _build_anthropic_payload(
         "claude-x", [{"role": "user", "content": "hi"}], t, 100
     )
-    return payload["temperature"]
+    return payload.get("temperature")
 
 
 def test_above_range_is_clamped_to_one():
@@ -35,6 +35,8 @@ def test_below_range_is_clamped_to_zero():
     assert _temp(-0.5) == 0.0
 
 
-def test_none_is_passed_through_unchanged():
-    # Callers may pass None; behavior is unchanged (no clamp, no crash).
-    assert _temp(None) is None
+def test_none_is_left_out():
+    # Callers may pass None (no clamp, no crash). The field is omitted rather
+    # than sent as null, which the API rejects with HTTP 400.
+    payload = _build_anthropic_payload("claude-x", [{"role": "user", "content": "hi"}], None, 100)
+    assert "temperature" not in payload

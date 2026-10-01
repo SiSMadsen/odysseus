@@ -508,7 +508,8 @@ def test_none_temperature_is_left_out_of_the_anthropic_request():
     from src.llm_core import _build_anthropic_payload
     payload = _build_anthropic_payload(
         "claude-sonnet-5-5", [{"role": "user", "content": "hi"}], None, 100)
-    assert payload.get("temperature") is None
+    # Not even null: the API rejects "temperature": null (second smoke run).
+    assert "temperature" not in payload
 
 
 def test_failed_model_request_ends_job_as_error_not_done(session_factory):

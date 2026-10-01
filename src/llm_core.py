@@ -1423,11 +1423,17 @@ def _anthropic_rejects_temperature(model: str) -> bool:
     match = re.search(
         r"(?<![a-z])opus[-_]?(\d{1,2})(?!\d)(?:[-_.](\d{1,2})(?!\d))?", model.lower()
     )
-    if not match:
-        return False
-    major = int(match.group(1))
-    minor = int(match.group(2)) if match.group(2) else 0
-    return (major, minor) >= (4, 7)
+    if match:
+        major = int(match.group(1))
+        minor = int(match.group(2)) if match.group(2) else 0
+        return (major, minor) >= (4, 7)
+    # The Claude 5 generation dropped the sampling parameters across the other
+    # families too: claude-sonnet-5-5 returns HTTP 400 "`temperature` is
+    # deprecated for this model" (seen live, Creator mode smoke test). Same
+    # digit capping as above, so a date can't read as a version
+    # (`claude-3-5-sonnet-20241022` doesn't match at all).
+    match = re.search(r"(?<![a-z])(?:sonnet|haiku|fable)[-_]?(\d{1,2})(?!\d)", model.lower())
+    return bool(match) and int(match.group(1)) >= 5
 
 # Reasoning effort level sent to Mistral thinking-capable models. Mistral's
 # API accepts "high", "medium", "low", "none" — see
@@ -1575,9 +1581,12 @@ def _build_anthropic_payload(model, messages, temperature, max_tokens, stream=Fa
         "messages": chat_messages,
         "max_tokens": max_tokens if max_tokens and max_tokens > 0 else 4096,
     }
-    # Opus 4.7+ removed the sampling parameters — sending `temperature` (even 0.0)
-    # returns HTTP 400. Omit it for those models; older Claude models still take it.
-    if not _anthropic_rejects_temperature(model):
+    # Opus 4.7+ and the Claude 5 generation removed the sampling parameters —
+    # sending `temperature` (even 0.0) returns HTTP 400. Omit it for those
+    # models; older Claude models still take it. No temperature (None) means
+    # no field at all: the API rejects `"temperature": null` with HTTP 400
+    # "temperature: Input should be a valid number" (seen live).
+    if temperature is not None and not _anthropic_rejects_temperature(model):
         payload["temperature"] = temperature
     if system_parts:
         system_text = "\n\n".join(system_parts)

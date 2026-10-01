@@ -30,5 +30,7 @@ def test_anthropic_payload_clamps_negative():
 
 
 def test_anthropic_payload_none_temperature_does_not_crash():
+    # No temperature → no field: the API rejects `"temperature": null` with
+    # HTTP 400 "temperature: Input should be a valid number".
     payload = _anthropic_payload(None)
-    assert payload["temperature"] is None
+    assert "temperature" not in payload
