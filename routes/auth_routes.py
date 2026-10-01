@@ -736,6 +736,7 @@ def setup_auth_routes(auth_manager: AuthManager) -> APIRouter:
         _INT_RANGES = {
             "agent_max_rounds": (1, 200),
             "agent_max_tool_calls": (0, 1000),  # 0 = unlimited
+            "creator_max_minutes": (1, 1440),
         }
         for key in DEFAULT_SETTINGS:
             if key in RETIRED_SETTING_KEYS:
@@ -750,6 +751,10 @@ def setup_auth_routes(auth_manager: AuthManager) -> APIRouter:
                 except (TypeError, ValueError):
                     raise HTTPException(400, f"{key} must be an integer")
                 val = max(lo, min(val, hi))
+            if key == "creator_protected_paths":
+                if not isinstance(val, list) or not all(isinstance(p, str) for p in val):
+                    raise HTTPException(400, f"{key} must be a list of paths")
+                val = [p.strip() for p in val if p.strip()]
             current[key] = val
         _save_settings(current)
         return without_retired_settings(current)

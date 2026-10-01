@@ -3449,6 +3449,7 @@ async def stream_agent_loop(
     _is_teacher_run: bool = False,
     history_session=None,
     defer_context_shaping: bool = False,
+    protected_action_check=None,
 ) -> AsyncGenerator[str, None]:
     """Streaming agent loop generator.
 
@@ -3474,6 +3475,7 @@ async def stream_agent_loop(
             exact_approval and exact_approval.allow_remaining_actions
         ),
         delegated_credential=bool(delegated_credential),
+        protected_action_check=protected_action_check,
     )
     mcp_mgr = get_mcp_manager()
     prep_timings: Dict[str, float] = {}

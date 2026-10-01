@@ -12,7 +12,7 @@ import uuid
 from dataclasses import dataclass, field
 from enum import Enum
 from types import MappingProxyType
-from typing import Any, Iterable, Mapping
+from typing import Any, Callable, Iterable, Mapping, Optional
 
 from src.tool_approval_scopes import CHAT_SESSION_APPROVAL_CONTEXT_MARKER
 from src.tool_security import BUILTIN_EMAIL_TOOLS, is_public_blocked_tool
@@ -627,6 +627,10 @@ class ToolRunSecurityContext:
     # Driven by a bearer API token, not a person at a browser. Privileged
     # tools are refused outright and no approval can lift that.
     delegated_credential: bool = False
+    # Optional caller-supplied check (Creator mode's protected-actions list).
+    # Returns a reason string when the action needs the user's OK, else None.
+    # Checked before the bypasses below so no approval scope can lift it.
+    protected_action_check: Optional[Callable[[Any, Any], Optional[str]]] = None
 
     def observe_messages(self, messages: Iterable[dict]) -> None:
         """Apply server-owned chat scope and promote untrusted prompt context."""
@@ -663,6 +667,10 @@ class ToolRunSecurityContext:
                     "It requires an interactive session."
                 ),
             )
+        if self.protected_action_check is not None:
+            reason = self.protected_action_check(tool_name, content)
+            if reason:
+                return ToolGateDecision(False, reason)
         if self.approval_gate_bypassed:
             return ToolGateDecision(True)
         if not self.external_untrusted_context_seen:

@@ -4,16 +4,29 @@ Modelled on routes/research/research_routes.py. Every route requires the
 `can_use_creator` privilege, which is off by default for non-admin users.
 """
 
+import asyncio
+import json
 import logging
 from typing import Optional
 
 from fastapi import APIRouter, HTTPException, Request
+from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field
 
 from core.middleware import INTERNAL_TOOL_USER
 from src.auth_helpers import require_user
-from src.creator_mode import CreatorManager, is_valid_job_id, privilege_disabled_tools
+from src.creator_mode import (
+    MAX_MAX_MINUTES,
+    MIN_MAX_MINUTES,
+    CreatorBusyError,
+    CreatorManager,
+    is_valid_job_id,
+    privilege_disabled_tools,
+)
+from src.creator_safety import protected_paths_from_settings
 from src.endpoint_resolver import resolve_endpoint
+
+_STREAM_POLL_S = 0.5
 
 logger = logging.getLogger(__name__)
 
@@ -94,10 +107,16 @@ def setup_creator_routes(creator_manager: CreatorManager) -> APIRouter:
             raise HTTPException(404, "Creator job not found")
         return job
 
+    def _events_after(events: list, since: int) -> list:
+        # Jobs from before Phase 3 have no `seq`; their position stands in.
+        return [e for i, e in enumerate(events) if e.get("seq", i + 1) > since]
+
     class CreatorStartRequest(BaseModel):
         task: str = Field(..., min_length=1, max_length=20000)
         endpoint_id: Optional[str] = None
         model: Optional[str] = None
+        # Time limit for this run; defaults to the creator_max_minutes setting.
+        max_minutes: Optional[int] = Field(default=None, ge=MIN_MAX_MINUTES, le=MAX_MAX_MINUTES)
 
     @router.post("/api/creator/start")
     async def creator_start(body: CreatorStartRequest, request: Request):
@@ -114,35 +133,78 @@ def setup_creator_routes(creator_manager: CreatorManager) -> APIRouter:
         if isinstance(global_disabled, list):
             disabled.update(global_disabled)
 
-        job_id = creator_manager.start_job(
-            task=task,
-            endpoint_url=ep_url,
-            model=ep_model,
-            headers=ep_headers,
-            owner=user,
-            disabled_tools=disabled,
-        )
-        return {"job_id": job_id, "status": "running", "model": ep_model}
+        try:
+            job_id = creator_manager.start_job(
+                task=task,
+                endpoint_url=ep_url,
+                model=ep_model,
+                headers=ep_headers,
+                owner=user,
+                disabled_tools=disabled,
+                max_minutes=body.max_minutes,
+                protected_paths=protected_paths_from_settings(),
+            )
+        except CreatorBusyError as e:
+            # Don't reveal another user's job id; the owner can find their own.
+            raise HTTPException(409, str(e))
+        job = creator_manager.get_job(job_id) or {}
+        return {
+            "job_id": job_id,
+            "status": "running",
+            "model": ep_model,
+            "max_minutes": job.get("max_minutes"),
+        }
 
     @router.get("/api/creator/status/{job_id}")
     async def creator_status(job_id: str, request: Request, since: int = 0):
-        """Job status plus the event log from index `since` onwards."""
+        """Job status plus the events after sequence number `since`."""
         user = _require_creator_user(request)
         job = _owned_job(job_id, user)
         events = job.get("events") or []
-        since = max(0, since)
         return {
             "job_id": job["id"],
             "task": job["task"],
             "status": job["status"],
             "started_at": job["started_at"],
             "finished_at": job["finished_at"],
+            "max_minutes": job.get("max_minutes"),
             "model": job["model"],
             "error": job["error"],
-            "event_count": len(events),
-            "events": events[since:],
+            "events": _events_after(events, max(0, since)),
             "has_report": bool(job.get("report")),
         }
+
+    @router.get("/api/creator/stream/{job_id}")
+    async def creator_stream(job_id: str, request: Request, since: int = 0):
+        """Live log: SSE stream of the job's events as they happen, ending
+        with a {"final": true, "status": ...} message when the job ends."""
+        user = _require_creator_user(request)
+        _owned_job(job_id, user)
+
+        async def _generate():
+            last = max(0, since)
+            while True:
+                if await request.is_disconnected():
+                    return
+                fresh = creator_manager.live_events_after(job_id, last)
+                if fresh is None:
+                    # Finished: send whatever the live view hadn't, then end.
+                    job = creator_manager.get_job(job_id) or {}
+                    for event in _events_after(job.get("events") or [], last):
+                        yield f"data: {json.dumps(event, default=str)}\n\n"
+                    final = {"final": True, "status": job.get("status"), "error": job.get("error")}
+                    yield f"data: {json.dumps(final)}\n\n"
+                    return
+                for event in fresh:
+                    last = max(last, event.get("seq", last))
+                    yield f"data: {json.dumps(event, default=str)}\n\n"
+                await asyncio.sleep(_STREAM_POLL_S)
+
+        return StreamingResponse(
+            _generate(),
+            media_type="text/event-stream",
+            headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
+        )
 
     @router.post("/api/creator/stop/{job_id}")
     async def creator_stop(job_id: str, request: Request):
@@ -164,6 +226,8 @@ def setup_creator_routes(creator_manager: CreatorManager) -> APIRouter:
             "status": job["status"],
             "report": job.get("report") or "",
             "error": job["error"],
+            # Where the full redacted audit log is on the server's disk.
+            "audit_log": str(creator_manager.audit_log_path(job["id"])),
         }
 
     return router

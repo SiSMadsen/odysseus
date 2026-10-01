@@ -112,6 +112,13 @@ DEFAULT_SETTINGS = {
     # unbounded model/API bill. Other values are bounded to [60, 86400].
     # Tune via Settings or by editing data/settings.json.
     "research_run_timeout_seconds": 1800,
+    # Creator mode (src/creator_mode.py). Default wall-clock limit per run, in
+    # minutes (clamped 1..1440); a run may ask for less or more within that range.
+    "creator_max_minutes": 60,
+    # Paths a Creator run may not touch without your OK. A tool call whose
+    # input mentions one of these (e.g. "/etc", "/home/me/photos") is not run;
+    # the job stops as "blocked" and says what it wanted to do. Empty = none.
+    "creator_protected_paths": [],
     "agent_max_tool_calls": 0,
     "agent_max_rounds": 20,  # per-message agent step cap (clamped 1..200)
     # Soft input-token budget for the agent loop. The DEFAULT value (6000) is the

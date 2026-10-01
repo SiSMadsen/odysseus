@@ -38,13 +38,15 @@ A new mode, like Deep Research, called **Creator**. You give it a task. It works
 - [ ] Final report: what was asked, what was done, what worked, what didn't, what's left, and the exact commands run.
 - [ ] A genuine "I'm blocked" exit that pauses the job and notifies you, instead of ending it.
 
-## Phase 3: Safety net (build before anything powerful)
-- [ ] Hard time limit per run.
-- [ ] Stop button in the UI that kills the job immediately.
-- [ ] Live log in the UI showing every command as it runs.
-- [ ] Full audit log on disk (command, time, result), with secrets blanked out.
-- [ ] Optional protected-actions list (for example, commands that touch certain folders need your OK).
-- [ ] Only one Creator job at a time (to start with).
+## Phase 3: Safety net (build before anything powerful) — DONE (server side; buttons come with the Phase 7 panel)
+Safety code lives in `src/creator_safety.py`; `src/creator_mode.py` uses it.
+- [x] Hard time limit per run. Setting `creator_max_minutes` (default 60, clamped 1–1440). A run can pass `max_minutes` to `/api/creator/start` to override it within that range. A run that hits the limit ends as `timeout`.
+- [x] Stop kills the job immediately. **Found:** the bash tool runs commands inside a persistent tmux session named after the session id (`ody-agent-<job id>`), so cancelling the job alone would leave the command running. Stop, timeout and every normal end now also kill that tmux session. `POST /api/creator/stop/{id}` is ready; the button is part of the Phase 7 panel.
+- [x] Live log: `GET /api/creator/stream/{id}` is an SSE stream that sends every round and tool start/result as it happens, then a final `{"final": true, "status": ...}` message. Each event has a `seq` number; `?since=N` resumes after event N, and `/status` uses the same numbering. The panel that displays it is Phase 7.
+- [x] Full audit log on disk: `data/creator/audit/<job id>.jsonl`, file mode 0600 and folder mode 0700. It records job start (task, model, time limit, protected paths), every tool start (full command) and result (exit code, output up to 100k chars), any block, and the job's end (status and report). The DB event log, report and error are redacted the same way. Redaction blanks known values (secret-shaped settings, secret-shaped environment variables, the run's own API key) and common token shapes (`sk-…`, GitHub/Slack/AWS/Google keys, Bearer tokens, `PASSWORD=…`-style assignments, private-key blocks). Phase 4 adds the Secrets-section values.
+- [x] Protected-actions list: setting `creator_protected_paths` (default empty, admin-editable through `/api/auth/settings`). A tool call whose input names one of these paths as a whole path component is not run. It goes through the agent loop's existing approval gate, through a new `protected_action_check` hook on `ToolRunSecurityContext`, which no approval scope can bypass. The job then ends as `blocked`, and its error says which path and what it wanted to run. Phase 2's pause/resume will turn this into "wait for your OK". **Limit:** this is a tripwire, not a sandbox. `cd /; cd etc; rm hosts` reaches `/etc` without spelling it out.
+- [x] Only one Creator job at a time, across all users. A second start gets HTTP 409 and doesn't reveal the other job's id.
+- Known gap: when a bash command runs without tmux (tmux missing), stop kills the shell process but not processes it started in the background. tmux is in the Docker image, so this mainly matters outside Docker.
 
 ## Phase 4: Secrets section
 - [ ] **[CHECK]** Read `src/secret_storage.py` properly and confirm it can hold arbitrary secrets, not just email passwords.

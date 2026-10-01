@@ -181,6 +181,7 @@ _TIMEOUT_EXEMPT_PREFIXES = (
     "/api/chat",            # streaming
     "/api/shell/stream",    # SSE
     "/api/research",        # multi-minute jobs
+    "/api/creator/stream",  # SSE live log of a Creator job
     "/api/model/download",  # tmux setup may run pip installs
     "/api/model/probe",     # SSE; iterates models with up to 8s timeout each
     "/api/model-endpoints", # /probe sub-route also iterates models
