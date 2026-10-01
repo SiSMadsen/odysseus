@@ -163,3 +163,38 @@ export function formatDuration(startIso, endIso, now = Date.now()) {
   if (m < 60) return `${m} min`;
   return `${Math.floor(m / 60)} h ${String(m % 60).padStart(2, '0')} min`;
 }
+
+/** Highest event seq seen (events without one count by position, as the server does). */
+export function lastSeq(events) {
+  let max = 0;
+  (events || []).forEach((e, i) => {
+    const seq = e && typeof e.seq === 'number' ? e.seq : i + 1;
+    if (seq > max) max = seq;
+  });
+  return max;
+}
+
+/** A job's status after one live event: a pause or resume flips it. */
+export function statusAfterEvent(status, event) {
+  if (!event || !isActive(status)) return status;
+  if (event.type === 'paused') return 'paused';
+  if (event.type === 'resumed') return 'running';
+  return status;
+}
+
+/** Time left before the hard limit: "42 min left", "35 s left", "time's up". */
+export function timeLeft(deadlineIso, now = Date.now()) {
+  const d = Date.parse(deadlineIso || '');
+  if (Number.isNaN(d)) return '';
+  const s = Math.round((d - now) / 1000);
+  if (s <= 0) return "time's up";
+  if (s < 60) return `${s} s left`;
+  const m = Math.ceil(s / 60);
+  if (m < 60) return `${m} min left`;
+  return `${Math.floor(m / 60)} h ${String(m % 60).padStart(2, '0')} min left`;
+}
+
+/** Delay before stream reconnect attempt n (0-based): 1 s, 2 s, 4 s … capped at 30 s. */
+export function reconnectDelay(attempt) {
+  return Math.min(30000, 1000 * 2 ** Math.max(0, attempt));
+}

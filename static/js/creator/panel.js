@@ -117,6 +117,8 @@ export function closePanel() {
   if (!_open) return;
   _open = false;
   _viewToken++;
+  _stopLive();
+  _view = null;
   if (_onDocKeydown) {
     document.removeEventListener('keydown', _onDocKeydown);
     _onDocKeydown = null;
@@ -274,6 +276,8 @@ function _hideHistoryOnMobile() {
 
 export function showNewJob() {
   _viewToken++;
+  _stopLive();
+  _view = null;
   _selectedId = null;
   _renderHistory();
   _hideHistoryOnMobile();
@@ -325,9 +329,18 @@ async function _handleStart() {
 }
 
 // ── A job ──────────────────────────────────────────────────────────────
+//
+// The job on screen is `_view`: its status record, its events and (once it's
+// finished) its report. While it's active, a live stream adds events as they
+// happen; when the stream says the job ended, the job is loaded again to get
+// the report.
+
+let _view = null;
 
 export async function selectJob(jobId) {
   const token = ++_viewToken;
+  _stopLive();
+  _view = null;
   _selectedId = jobId;
   _renderHistory();
   _hideHistoryOnMobile();
@@ -349,40 +362,182 @@ export async function selectJob(jobId) {
     try { report = await api(`${API}/report/${encodeURIComponent(jobId)}`); } catch (_) { report = null; }
   }
   if (token !== _viewToken) return;
-  _renderJob(status, report);
+
+  _view = { token, status, events: status.events || [], report };
+  _renderHead();
+  _renderTimeline({ scrollToEnd: true });
+  if (view.isActive(status.status)) _startLive();
 }
 
-function _renderHead(status) {
+function _setJobStatus(jobId, status) {
+  const entry = _jobs.find(j => j.job_id === jobId);
+  if (entry && entry.status !== status) {
+    entry.status = status;
+    _renderHistory();
+  }
+}
+
+// ── Header: status, time left, Stop ────────────────────────────────────
+
+function _renderHead() {
   const head = byId('creator-job-head');
-  if (!head) return;
+  if (!head || !_view) return;
+  const status = _view.status;
+  const active = view.isActive(status.status);
   const firstLine = (status.task || '').split('\n')[0];
   const meta = [
     status.model,
-    view.formatDuration(status.started_at, status.finished_at),
+    active ? '' : view.formatDuration(status.started_at, status.finished_at),
     status.max_minutes ? `limit ${status.max_minutes} min` : '',
   ].filter(Boolean).join(' · ');
-  const children = [
-    make('div', { class: 'creator-job-title', text: firstLine || '(no task)', title: status.task || '' }),
-    make('div', { class: 'creator-job-sub' }, [
-      make('span', { class: `creator-status-pill status-${status.status}`, text: view.statusLabel(status.status) }),
-      make('span', { class: 'creator-job-meta', text: meta }),
-    ]),
-  ];
-  if (view.isActive(status.status)) {
-    const refresh = make('button', { type: 'button', class: 'creator-refresh-btn', text: 'Refresh' });
-    refresh.addEventListener('click', () => { refreshHistory(); selectJob(status.job_id); });
-    children[1].appendChild(refresh);
+
+  const sub = make('div', { class: 'creator-job-sub' }, [
+    make('span', { class: `creator-status-pill status-${status.status}`, text: view.statusLabel(status.status) }),
+    make('span', { class: 'creator-job-meta', text: meta }),
+  ]);
+  if (active) {
+    sub.appendChild(make('span', { id: 'creator-time-left', class: 'creator-time-left' }));
+    sub.appendChild(make('span', { id: 'creator-live-state', class: 'creator-live-state', role: 'status' }));
+    const stop = make('button', {
+      id: 'creator-stop-btn', type: 'button', class: 'creator-stop-btn', text: 'Stop',
+      title: 'Stop this job now. The running command is killed and a report is written.',
+    });
+    stop.addEventListener('click', _handleStop);
+    sub.appendChild(stop);
   }
-  head.replaceChildren(...children);
+  head.replaceChildren(
+    make('div', { class: 'creator-job-title', text: firstLine || '(no task)', title: status.task || '' }),
+    sub,
+  );
+  _updateTimeLeft();
 }
 
-function _renderJob(status, report) {
-  _renderHead(status);
-  const timeline = byId('creator-timeline');
-  if (!timeline) return;
-  const nodes = [make('div', { class: 'creator-msg creator-msg-user', text: status.task || '' })];
-  view.buildTimeline(status.events).forEach((item) => nodes.push(_renderItem(item)));
+function _updateTimeLeft() {
+  const el = byId('creator-time-left');
+  if (!el || !_view) return;
+  const text = view.timeLeft(_view.status.deadline_at);
+  el.textContent = text;
+  el.title = _view.status.deadline_at
+    ? `Hard time limit at ${new Date(_view.status.deadline_at).toLocaleTimeString()} (paused time counts)`
+    : '';
+}
 
+function _setLiveState(text) {
+  const el = byId('creator-live-state');
+  if (el) el.textContent = text || '';
+}
+
+async function _handleStop() {
+  if (!_view) return;
+  const btn = byId('creator-stop-btn');
+  if (btn) { btn.disabled = true; btn.textContent = 'Stopping…'; }
+  try {
+    const out = await api(`${API}/stop/${encodeURIComponent(_view.status.job_id)}`, { method: 'POST' });
+    // The stream's final message reloads the job. If the job had already
+    // ended, there may be no stream left to say so.
+    if (!out.stopped) selectJob(_view.status.job_id);
+  } catch (e) {
+    if (btn) { btn.disabled = false; btn.textContent = 'Stop'; }
+    _setLiveState(`Stop failed: ${e.message}`);
+  }
+}
+
+// ── Live stream ────────────────────────────────────────────────────────
+
+let _live = null;   // { token, source, clock, retryTimer, attempts, seq, renderQueued }
+
+function _startLive() {
+  if (!_view) return;
+  _live = {
+    token: _view.token, source: null, retryTimer: null, attempts: 0,
+    seq: view.lastSeq(_view.events), renderQueued: false,
+    clock: setInterval(_updateTimeLeft, 1000),
+  };
+  _connect();
+}
+
+function _stopLive() {
+  if (!_live) return;
+  if (_live.source) _live.source.close();
+  clearTimeout(_live.retryTimer);
+  clearInterval(_live.clock);
+  _live = null;
+}
+
+function _connect() {
+  const live = _live;
+  if (!live || !_view || live.token !== _view.token) return;
+  const jobId = _view.status.job_id;
+  const source = new EventSource(`${API}/stream/${encodeURIComponent(jobId)}?since=${live.seq}`);
+  live.source = source;
+
+  source.onopen = () => {
+    if (_live !== live) return;
+    live.attempts = 0;
+    _setLiveState('');
+  };
+  source.onmessage = (msg) => {
+    if (_live !== live) return;
+    let data;
+    try { data = JSON.parse(msg.data); } catch (_) { return; }
+    if (data && data.final) {
+      _stopLive();
+      if (data.status) _setJobStatus(jobId, data.status);
+      refreshHistory();
+      if (_view && _view.token === live.token) selectJob(jobId);
+      return;
+    }
+    _onLiveEvent(data);
+  };
+  source.onerror = () => {
+    if (_live !== live) return;
+    // EventSource would retry with the same ?since=, replaying events, so
+    // reconnect by hand from the last one seen.
+    source.close();
+    live.source = null;
+    const delay = view.reconnectDelay(live.attempts++);
+    _setLiveState(`Live view lost, reconnecting in ${Math.round(delay / 1000)} s…`);
+    live.retryTimer = setTimeout(_connect, delay);
+  };
+}
+
+function _onLiveEvent(event) {
+  const live = _live;
+  if (!live || !_view || !event || typeof event !== 'object') return;
+  if (typeof event.seq === 'number') {
+    if (event.seq <= live.seq) return;   // already have it
+    live.seq = event.seq;
+  }
+  _view.events.push(event);
+  const next = view.statusAfterEvent(_view.status.status, event);
+  if (next !== _view.status.status) {
+    _view.status.status = next;
+    _setJobStatus(_view.status.job_id, next);
+    _renderHead();
+  }
+  if (!live.renderQueued) {
+    live.renderQueued = true;
+    requestAnimationFrame(() => {
+      live.renderQueued = false;
+      if (_live === live) _renderTimeline({});
+    });
+  }
+}
+
+// ── Timeline ───────────────────────────────────────────────────────────
+
+function _renderTimeline({ scrollToEnd = false }) {
+  const timeline = byId('creator-timeline');
+  if (!timeline || !_view) return;
+  // Re-rendered whole on each batch of live events: keep the commands you
+  // opened open, and only follow new output if you were already at the end.
+  const atEnd = timeline.scrollHeight - timeline.scrollTop - timeline.clientHeight < 40;
+  const opened = new Set();
+  timeline.querySelectorAll('details.creator-cmd').forEach((d, i) => { if (d.open) opened.add(i); });
+
+  const { status, report } = _view;
+  const nodes = [make('div', { class: 'creator-msg creator-msg-user', text: status.task || '' })];
+  view.buildTimeline(_view.events).forEach((item) => nodes.push(_renderItem(item)));
   if (report && report.report) {
     const body = make('div', { class: 'creator-report-body' });
     body.innerHTML = markdownModule.mdToHtml(report.report);   // same renderer as chat replies
@@ -392,11 +547,15 @@ function _renderJob(status, report) {
     nodes.push(make('div', { class: 'creator-msg creator-msg-report' }, [
       make('div', { class: 'creator-msg-label', text: 'Report' }), body, audit,
     ]));
-  } else if (status.error) {
+  } else if (status.error && !view.isActive(status.status)) {
     nodes.push(make('div', { class: 'creator-system level-error', text: status.error }));
+  } else if (view.isActive(status.status)) {
+    nodes.push(make('div', { class: 'creator-working', text: status.status === 'paused' ? 'Waiting for you…' : 'Working…' }));
   }
+  const prevTop = timeline.scrollTop;
   timeline.replaceChildren(...nodes);
-  timeline.scrollTop = timeline.scrollHeight;
+  timeline.querySelectorAll('details.creator-cmd').forEach((d, i) => { if (opened.has(i)) d.open = true; });
+  timeline.scrollTop = (scrollToEnd || atEnd) ? timeline.scrollHeight : prevTop;
 }
 
 function _renderItem(item) {

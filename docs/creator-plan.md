@@ -1,6 +1,6 @@
 # Creator Mode: Programming Plan
 
-Status (2026-10-01, branch `creator-mode`): Phases 1, 2, 3 and 4 are built, tested, and smoke-tested against a real model in the Docker container. The "all tools in one turn" TODO is done. **Now: Phase 7 (the Creator window), before Phase 6.** Steps 7a (history route) and 7b (the window) are done. Phases 5, 6 and 8 are not started.
+Status (2026-10-01, branch `creator-mode`): Phases 1, 2, 3 and 4 are built, tested, and smoke-tested against a real model in the Docker container. The "all tools in one turn" TODO is done. **Now: Phase 7 (the Creator window), before Phase 6.** Steps 7a (history route), 7b (the window) and 7c (live run, Stop) are done. Phases 5, 6 and 8 are not started.
 Items marked **[CHECK]** are things not yet looked at, so their size isn't known.
 
 ## Purpose, scope and safeguards (read this first)
@@ -156,9 +156,14 @@ How it works: the agent never receives the root password. It calls `run_as_root(
   - Left: "+ New job" and the history (status dot, first line of the task, status and age). On a phone it's behind a "Jobs" button.
   - Right: the task as your message, then progress notes, commands (expandable, with exit code and an "approved" mark), pauses and your answers, ending notices, and the report (markdown, via the chat's `mdToHtml`), with the audit log's path under it. Everything except the report goes in as text, not HTML.
   - Composer (only with "New job" selected): the task, a time limit (blank = server default, remembered), and "Approve untrusted actions up front" (not remembered: it's a per-run decision). Ctrl/Cmd+Enter starts. A 409 says a job is already running.
-  - A running job shows a snapshot with a Refresh button until 7c.
   - No model picker yet: a run uses your default/chat model, the same as the API without `model`.
-- [ ] **7c: live run.** The SSE stream (reconnects with `?since=N`), status pill, deadline countdown, Stop.
+- [x] **7c: live run.** A running or paused job is followed over `/api/creator/stream` (SSE), starting after the last event `/status` gave.
+  - New events are added as they arrive (redrawn at most once per frame). Commands you opened stay open, and the view only follows new output if you were already at the bottom. Duplicate events (by `seq`) are ignored.
+  - The status pill and the history dot change on pause/resume. The header shows the time left until the hard limit (`deadline_at`, ticking every second; paused time counts), and a red **Stop** button (one click, no confirmation: it's the safety control).
+  - If the stream drops, the window reconnects by hand from the last `seq` (1 s, 2 s, 4 s … up to 30 s) and says so in the header. The browser's own retry would replay events from the original `?since=`.
+  - When the stream's final message comes, the job is loaded again, now with its report. Closing the window or switching jobs ends the stream; minimizing doesn't.
+  - Tested: helpers with node (`tests/test_creator_window_js.py`); the panel's live behaviour with a throwaway jsdom harness (fake API and EventSource) that isn't in the repo, since the repo has no jsdom.
+  - The "Refresh" button from 7b is gone.
 - [ ] **7d: pauses.** An approval card with the choices the pause allows (no `approve_job` for protected paths), and the composer answers questions and `BLOCKED`.
 - [x] Secrets screen (done in Phase 4: Settings > Secrets).
 - Not shown live: the model's own text between tool calls. The engine drops text deltas; only `PROGRESS:` notes, tool calls, pauses and the report reach the event log. Adding a per-round text event is possible later if the window feels too quiet.

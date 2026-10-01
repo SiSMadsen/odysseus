@@ -122,6 +122,30 @@ def test_helpers():
 
 
 @needs_node
+def test_live_helpers():
+    out = _run(textwrap.dedent(f"""
+        const v = await import('{_VIEW}');
+        const now = Date.parse('2026-10-01T12:00:00Z');
+        console.log(JSON.stringify({{
+          seq: [v.lastSeq([{{seq: 4}}, {{seq: 9}}, {{seq: 7}}]), v.lastSeq([{{}}, {{}}]), v.lastSeq([])],
+          status: [v.statusAfterEvent('running', {{type: 'paused'}}),
+                   v.statusAfterEvent('paused', {{type: 'resumed'}}),
+                   v.statusAfterEvent('running', {{type: 'note'}}),
+                   v.statusAfterEvent('done', {{type: 'paused'}})],
+          left: [v.timeLeft('2026-10-01T12:42:00Z', now), v.timeLeft('2026-10-01T12:00:35Z', now),
+                 v.timeLeft('2026-10-01T13:05:00Z', now), v.timeLeft('2026-10-01T11:59:00Z', now),
+                 v.timeLeft(null, now)],
+          delay: [0, 1, 2, 10].map(v.reconnectDelay),
+        }}));
+    """))
+    # Events without a seq count by position, as the server's ?since= does.
+    assert out["seq"] == [9, 2, 0]
+    assert out["status"] == ["paused", "running", "running", "done"]
+    assert out["left"] == ["42 min left", "35 s left", "1 h 05 min left", "time's up", ""]
+    assert out["delay"] == [1000, 2000, 4000, 30000]
+
+
+@needs_node
 def test_panel_module_parses():
     proc = subprocess.run(["node", "--check", str(_PANEL)], capture_output=True, text=True, timeout=30)
     assert proc.returncode == 0, proc.stderr

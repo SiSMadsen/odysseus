@@ -41476,10 +41476,6 @@ body.settings-sidebar-resize-active {
 .creator-job-head { display: flex; flex-direction: column; gap: 4px; }
 .creator-job-title { font-size: 14px; font-weight: 600; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .creator-job-sub { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
-.creator-refresh-btn {
-  margin-left: auto; padding: 2px 8px; border-radius: 6px; border: 1px solid var(--border);
-  background: transparent; color: var(--fg); cursor: pointer; font: inherit; font-size: 11px;
-}
 .creator-timeline {
   flex: 1; min-height: 0; overflow-y: auto; display: flex; flex-direction: column; gap: 6px;
   padding-right: 4px;
@@ -41574,3 +41570,12 @@ body.settings-sidebar-resize-active {
   .creator-layout.history-shown .creator-history { display: flex; }
   .creator-msg-user { max-width: 95%; }
 }
+.creator-time-left { font-size: 11px; font-variant-numeric: tabular-nums; }
+.creator-live-state { font-size: 11px; color: #c77d2e; }
+.creator-stop-btn {
+  margin-left: auto; padding: 3px 14px; border-radius: 6px; cursor: pointer; font: inherit; font-size: 12px;
+  border: 1px solid #d9534f; background: #d9534f; color: #fff;
+}
+.creator-stop-btn:hover { filter: brightness(1.1); }
+.creator-stop-btn:disabled { opacity: 0.6; cursor: default; }
+.creator-working { font-size: 11px; opacity: 0.6; padding: 2px 0; }
