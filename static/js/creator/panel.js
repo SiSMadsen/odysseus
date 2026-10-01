@@ -23,6 +23,8 @@ let _open = false;
 let _onDocKeydown = null;
 let _selectedId = null;      // null: "New job"
 let _jobs = [];
+// An unsent task survives closing the window (Esc, a click outside it).
+let _draftTask = '';
 // Bumped on every job switch, so a slow response for an earlier selection
 // can't overwrite the job now on screen.
 let _viewToken = 0;
@@ -130,13 +132,26 @@ export function openPanel(jobId) {
   const header = pane.querySelector('.creator-pane-header');
   if (themeModule && themeModule.makeDraggable && header) themeModule.makeDraggable(pane, header);
 
-  refreshHistory();
-  if (jobId) selectJob(jobId); else showNewJob();
+  if (jobId) {
+    refreshHistory();
+    selectJob(jobId);
+    return;
+  }
+  showNewJob();
+  // With a job running or paused, open on it rather than on "New job" —
+  // unless you've already clicked somewhere or started typing a task.
+  const token = _viewToken;
+  refreshHistory().then(() => {
+    const active = _jobs.find(j => view.isActive(j.status));
+    if (!active || token !== _viewToken || (byId('creator-task')?.value || '').trim()) return;
+    selectJob(active.job_id);
+  });
 }
 
 export function closePanel() {
   if (!_open) return;
   _open = false;
+  _draftTask = byId('creator-task')?.value || '';
   _viewToken++;
   _stopLive();
   _view = null;
@@ -217,6 +232,7 @@ function _buildComposer() {
     placeholder: 'default', class: 'creator-minutes',
   });
   if (saved.max_minutes) minutes.value = saved.max_minutes;
+  task.value = _draftTask;
   const untrusted = make('input', { id: 'creator-approve-untrusted', type: 'checkbox' });
   // Deliberately not remembered: it's a per-run decision.
   const startBtn = make('button', { id: 'creator-start-btn', type: 'button', class: 'creator-start-btn', text: 'Start' });
@@ -372,6 +388,7 @@ async function _handleStart() {
   try {
     const out = await api(`${API}/start`, { method: 'POST', body: JSON.stringify(body) });
     if (taskEl) taskEl.value = '';
+    _draftTask = '';
     const untrusted = byId('creator-approve-untrusted');
     if (untrusted) untrusted.checked = false;
     _setComposerMessage('');

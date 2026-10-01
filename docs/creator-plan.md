@@ -170,6 +170,7 @@ How it works: the agent never receives the root password. It calls `run_as_root(
   - A pause that arrives live fetches `/status` for its choices. Typed text survives live redraws for the same pause; a new pause starts empty. A 409 from `/resume` (stopped, timed out or answered elsewhere) reloads the job; a 400 shows the server's message.
   - **Attention:** a pause while the window is minimized (or the tab is hidden) puts a dot on the sidebar and rail buttons, and shows a browser notification if you've already allowed notifications for the site. The window never asks for that permission. Nothing notifies you while the window is closed: the live stream only runs while it's open or minimized.
   - Tested: `replyControls`/`sendLabel` with node; the reply bar end to end with the jsdom harness (approve-for-job with a note, protected path, question by chip and by text, blocked with an empty answer, 409, 400, the dot and notification).
+- [x] Opening the window with a job running or paused goes straight to that job (unless you've already clicked elsewhere or have an unsent task typed). An unsent task survives closing the window (Esc, a click outside it).
 - [x] Secrets screen (done in Phase 4: Settings > Secrets).
 - Not shown live: the model's own text between tool calls. The engine drops text deltas; only `PROGRESS:` notes, tool calls, pauses and the report reach the event log. Adding a per-round text event is possible later if the window feels too quiet.
 
