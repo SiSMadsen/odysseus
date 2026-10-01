@@ -490,6 +490,28 @@ def test_time_limit_counts_paused_time(session_factory, monkeypatch):
     assert "What's left" in job["report"] and "timeout" in job["report"]
 
 
+def test_failed_model_request_ends_job_as_error_not_done(session_factory):
+    """Found in the smoke test: a provider failure (agent_terminal failed)
+    used to be recorded as a finished job with an empty report."""
+    calls = []
+    script = [[
+        ("sse", {"type": "agent_terminal", "data": {
+            "failed": True, "failure": {"status": 400, "message": "model not found: claude-x"}}}),
+        ("sse", {"error": "HTTP 400 from provider"}),
+    ]]
+
+    async def run():
+        mgr = CreatorManager(session_factory=session_factory, agent_loop=scripted(script, calls))
+        job_id = mgr.start_job("t", "u", "m")
+        await _wait_finished(mgr, job_id)
+        return mgr.get_job(job_id)
+
+    job = asyncio.run(run())
+    assert job["status"] == "error"
+    assert "model not found: claude-x" in job["error"]
+    assert "Stopped: error" in job["report"]
+
+
 def test_orphaned_paused_job_marked_interrupted(session_factory):
     db = session_factory()
     db.add(CreatorJob(id="cr-bbbbbbbbbbbb", owner="alice", task="t", status="paused"))

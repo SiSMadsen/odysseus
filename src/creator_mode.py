@@ -133,6 +133,10 @@ class CreatorResumeError(ValueError):
     """A resume request that doesn't fit the job's pause."""
 
 
+class CreatorModelError(RuntimeError):
+    """The model request failed (the agent loop sent a failed agent_terminal)."""
+
+
 class CreatorNotPausedError(CreatorResumeError):
     """Resume sent to a job that isn't waiting (or is already resuming)."""
 
@@ -828,6 +832,21 @@ class CreatorManager:
                     continue
 
                 etype = data.get("type")
+                if etype == "agent_terminal":
+                    # The model request itself failed (provider error, bad
+                    # key, unreachable endpoint...). The loop stops here; it is
+                    # not a finished task.
+                    meta = data.get("data") if isinstance(data.get("data"), dict) else {}
+                    if meta.get("failed"):
+                        failure = meta.get("failure")
+                        msg = (failure.get("message") or failure.get("status")
+                               if isinstance(failure, dict) else failure)
+                        raise CreatorModelError(
+                            f"The model request failed: {msg or 'no details from the provider'}")
+                if etype is None and data.get("error"):
+                    # Raw provider error chunk; keep it in the log for diagnosis.
+                    add_event({"type": "model_error", "error": _truncate(str(data.get("error")), 1000)})
+                    continue
                 if etype == "agent_step":
                     live["rounds"] += 1
                 elif etype == "rounds_exhausted":
