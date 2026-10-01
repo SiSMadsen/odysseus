@@ -27,6 +27,9 @@ DEFAULT_PRIVILEGES = {
     "can_use_bash": False,
     "can_use_documents": True,
     "can_use_research": True,
+    # Creator mode (src/creator_mode.py): long autonomous agent runs. Off by
+    # default; admins get it through ADMIN_PRIVILEGES.
+    "can_use_creator": False,
     "can_generate_images": True,
     "can_manage_memory": True,
     "max_messages_per_day": 0,

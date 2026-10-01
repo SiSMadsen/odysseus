@@ -830,6 +830,26 @@ class TaskRun(Base):
     )
 
 
+class CreatorJob(Base):
+    """One Creator-mode run (src/creator_mode.py): a long agent-loop job."""
+    __tablename__ = "creator_jobs"
+
+    id          = Column(String, primary_key=True, index=True)
+    owner       = Column(String, nullable=True, index=True)
+    task        = Column(Text, nullable=False)
+    status      = Column(String, default="running")  # "running", "done", "error", "stopped", "blocked", "interrupted"
+    started_at  = Column(DateTime, nullable=False, default=utcnow_naive)
+    finished_at = Column(DateTime, nullable=True)
+    report      = Column(Text, nullable=True)
+    error       = Column(Text, nullable=True)
+    events      = Column(Text, nullable=True)         # JSON list of agent events (tool calls, rounds, ...)
+    model       = Column(String, nullable=True)
+
+    __table_args__ = (
+        Index('ix_creator_jobs_owner_started', 'owner', 'started_at'),
+    )
+
+
 class Memory(Base):
     """
     SQLAlchemy model for Memory table.

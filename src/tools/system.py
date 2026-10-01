@@ -541,6 +541,7 @@ _APP_API_BLOCKLIST_PREFIXES = (
     "/api/admin",          # admin one-shots (wipe etc.)
     "/api/shell",          # host shell execution must stay behind named command tooling
     "/api/backup/restore", # destructive restore
+    "/api/creator",        # Creator jobs are started/stopped by the user, never by an agent
 )
 
 # (method, prefix) pairs to refuse specifically. Used for endpoints

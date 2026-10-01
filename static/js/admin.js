@@ -28,6 +28,7 @@ const PRIV_LABELS = {
   can_use_bash: 'Shell / Python / Files',
   can_use_documents: 'Document editor',
   can_use_research: 'Deep research',
+  can_use_creator: 'Creator mode',
   can_generate_images: 'Image generation',
   can_manage_memory: 'Memory & skills',
 };

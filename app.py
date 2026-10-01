@@ -712,6 +712,13 @@ app.include_router(setup_chat_routes(
 from routes.research.research_routes import setup_research_routes
 app.include_router(setup_research_routes(research_handler, session_manager=session_manager))
 
+# Creator mode (long autonomous agent jobs)
+from src.creator_mode import CreatorManager
+from routes.creator_routes import setup_creator_routes
+creator_manager = CreatorManager()
+app.state.creator_manager = creator_manager
+app.include_router(setup_creator_routes(creator_manager))
+
 # History
 from routes.history.history_routes import setup_history_routes
 app.include_router(setup_history_routes(session_manager, upload_handler=upload_handler))

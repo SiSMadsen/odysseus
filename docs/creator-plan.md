@@ -15,13 +15,21 @@ A new mode, like Deep Research, called **Creator**. You give it a task. It works
 2. **Time limit per run** (suggested default: 60 minutes, adjustable).
 3. **Which actions always need your OK** even in Creator mode (suggested: none by default, but the list should exist and be editable).
 
-## Phase 1: Skeleton (the mode exists and runs)
-- [ ] **[CHECK]** Trace how the chat decides which mode a message runs in, and how the UI toggles/panels for research are wired. This sets the size of Phase 1.
-- [ ] New engine file `src/creator_mode.py`, modelled on `src/deep_research.py` (runs as a background job).
-- [ ] New routes: start, status, stop, report (modelled on `/api/research/*`).
-- [ ] New permission flag `can_use_creator`, off by default, modelled on `can_use_research`.
-- [ ] Job record in the database: task, status, start/end time, report, event log.
-- [ ] Engine runs the existing agent loop (`src/agent_loop.py`) with the round cap and tool-call cap set very high.
+## Phase 1: Skeleton (the mode exists and runs) — DONE
+- [x] **[CHECK]** Trace how the chat decides which mode a message runs in, and how the UI toggles/panels for research are wired. Findings:
+  - Mode is decided per message in `routes/chat_routes.py`: the form's `mode` field (`chat`/`agent`) is escalated to `agent` by tool/search/web intent, and research is a separate `do_research` flag (`_research_flags`), turned off when the user lacks `can_use_research`.
+  - Deep Research does **not** use the agent loop. `src/deep_research.py` is its own search/extract/synthesize loop, run by `src/research_handler.py`. So Creator is modelled on its *job pattern* (background task, routes, privilege), not its engine. The engine follows `src/task_scheduler.py` / `src/bg_monitor.py`, which already run `stream_agent_loop` headless.
+  - UI: the Research toggle is `#research-toggle-btn` in `static/index.html`, referenced from `static/app.js`, `static/js/chat.js`, `static/js/sessions.js`, and hidden by privilege in `static/js/init.js`. The panel is `static/js/research/panel.js` + `jobs.js` (~1,600 lines together). A Creator panel (Phase 7) is a real chunk of work, but it can be much smaller than that.
+- [x] New engine file `src/creator_mode.py` (`CreatorManager`): runs each job as an asyncio background task.
+- [x] New routes in `routes/creator_routes.py`: `POST /api/creator/start`, `GET /api/creator/status/{job_id}?since=N`, `POST /api/creator/stop/{job_id}`, `GET /api/creator/report/{job_id}`. Owner-scoped (someone else's job is a 404).
+- [x] New permission flag `can_use_creator`, off by default (admins have it). Unlike `require_privilege`, the Creator check fails closed when the key is missing. The agent's own loopback user can't call these routes, and `/api/creator` is blocked in `app_api`.
+- [x] Job record in the database: `creator_jobs` table (`CreatorJob` in `core/database.py`) with task, status, start/end time, report, error, model, event log (JSON). Jobs left `running` by a restart are marked `interrupted` at startup.
+- [x] Engine runs `stream_agent_loop` with `max_rounds=500`, `max_tool_calls=2000`, `workload="background"`, and the user's privilege-based + global disabled tools.
+- Notes for later phases:
+  - No time limit yet (Phase 3). A run only ends when the model stops, a cap is hit, or someone calls stop.
+  - If a tool asks for approval mid-run, the approval is retired (the action is not run) and the job ends as `blocked`, the same as scheduled tasks. Phase 2 replaces this with a real pause.
+  - The report is just the model's final text for now. Phase 2 makes it structured.
+  - No UI yet (Phase 7). Use the routes directly to try it.
 
 ## Phase 2: The "never give up" behaviour
 - [ ] Creator-specific instructions: "Try another approach when something fails. List what you tried. Ask the user only when blocked on something only they can give you, like a missing credential or a decision."
