@@ -1,6 +1,6 @@
 # Creator Mode: Programming Plan
 
-Status (2026-10-01, branch `creator-mode`): Phases 1, 2, 3 and 4 are built, tested, and smoke-tested against a real model in the Docker container. The "all tools in one turn" TODO is done. **Now: Phase 7 (the Creator window), before Phase 6.** Step 7a (history route) is done. Phases 5, 6 and 8 are not started.
+Status (2026-10-01, branch `creator-mode`): Phases 1, 2, 3 and 4 are built, tested, and smoke-tested against a real model in the Docker container. The "all tools in one turn" TODO is done. **Now: Phase 7 (the Creator window), before Phase 6.** Steps 7a (history route) and 7b (the window) are done. Phases 5, 6 and 8 are not started.
 Items marked **[CHECK]** are things not yet looked at, so their size isn't known.
 
 ## Purpose, scope and safeguards (read this first)
@@ -151,7 +151,13 @@ How it works: the agent never receives the root password. It calls `run_as_root(
 
 - [x] **[CHECK]** Read how the research panel is built. Findings: it's an overlay built on demand (`static/js/research/panel.js`, `openPanel()` creates `#research-overlay` with a `.modal-content` pane, draggable by its header, minimize/close buttons). Wiring is spread over: the sidebar item and rail button in `static/index.html`, the click handler and `_railToolMap` in `static/app.js`, the modal registry and `_AUTO_WIRE` in `static/js/modalManager.js` (dock chip when minimized), `static/js/ui_visibility.js`, `static/js/keyboard-shortcuts.js`, and privilege hiding in `static/js/init.js`. The research panel is ~1,640 lines; Creator's should be a third of that.
 - [x] **7a: history route.** `GET /api/creator/jobs?limit=N` (default 50, max 200): the caller's jobs, newest first, with id, task (first 300 chars), status (live for a running job), times, model and whether there's a report. No events or report text.
-- [ ] **7b: the window.** Sidebar item and rail button (hidden without `can_use_creator`), modal registration, history list beside a conversation view, a composer that starts a job (time limit and "approve untrusted up front" as options). Opening a past job shows its task, events and report.
+- [x] **7b: the window.** `static/js/creator/panel.js` (DOM) and `static/js/creator/view.js` (event log → timeline, no DOM, tested with node in `tests/test_creator_window_js.py`). Styles at the end of `static/style.css`.
+  - "Creator" in Tools in the sidebar and on the icon rail, hidden without `can_use_creator` (`init.js`). The module is loaded on first click. It's registered with `modalManager` (dock chip, rail badge) and the "toggle window" shortcut.
+  - Left: "+ New job" and the history (status dot, first line of the task, status and age). On a phone it's behind a "Jobs" button.
+  - Right: the task as your message, then progress notes, commands (expandable, with exit code and an "approved" mark), pauses and your answers, ending notices, and the report (markdown, via the chat's `mdToHtml`), with the audit log's path under it. Everything except the report goes in as text, not HTML.
+  - Composer (only with "New job" selected): the task, a time limit (blank = server default, remembered), and "Approve untrusted actions up front" (not remembered: it's a per-run decision). Ctrl/Cmd+Enter starts. A 409 says a job is already running.
+  - A running job shows a snapshot with a Refresh button until 7c.
+  - No model picker yet: a run uses your default/chat model, the same as the API without `model`.
 - [ ] **7c: live run.** The SSE stream (reconnects with `?since=N`), status pill, deadline countdown, Stop.
 - [ ] **7d: pauses.** An approval card with the choices the pause allows (no `approve_job` for protected paths), and the composer answers questions and `BLOCKED`.
 - [x] Secrets screen (done in Phase 4: Settings > Secrets).

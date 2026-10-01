@@ -104,6 +104,7 @@ export function initKeyboardShortcuts(modules) {
     'doclib-modal':           'tool-library-btn',
     'gallery-modal':          'tool-gallery-btn',
     'research-overlay':       'tool-research-btn',
+    'creator-overlay':        'tool-creator-btn',
     'cookbook-modal':         'tool-cookbook-btn',
     'compare-model-overlay':  'tool-compare-btn',
     'calendar-modal':         'tool-calendar-btn',

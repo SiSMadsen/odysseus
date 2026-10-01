@@ -141,6 +141,7 @@ const _LABELS = {
   // The Prompt window (characters / inject / group). Syringe = "prompt" icon,
   // matching its title bar. Full SVG markup (multi-path) per the dock renderer.
   'custom-preset-modal': { label: 'Prompt',  icon: '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="m18 2 4 4"/><path d="m17 7 3-3"/><path d="M19 9 8.7 19.3c-1 1-2.5 1-3.4 0l-.6-.6c-1-1-1-2.5 0-3.4L15 5"/><path d="m9 11 4 4"/><path d="m5 19-3 3"/><path d="m14 4 6 6"/></svg>' },
+  'creator-overlay':   { label: 'Creator',   icon: 'M14.7 6.3a1 1 0 0 0 0 1.4l1.6 1.6a1 1 0 0 0 1.4 0l3.77-3.77a6 6 0 0 1-7.94 7.94l-6.91 6.91a2.12 2.12 0 0 1-3-3l6.91-6.91a6 6 0 0 1 7.94-7.94l-3.76 3.76z' },
   'research-overlay':  { label: 'Research',  icon: 'M3 11a8 8 0 1 0 16 0a8 8 0 1 0-16 0M21 21l-4.35-4.35M11 8L11 14M8 11L14 11' },
   'theme-modal':       { label: 'Theme',     icon: 'M12 2a10 10 0 1 0 10 10c0-1-1-2-2-2h-2a2 2 0 0 1 0-4h1a2 2 0 0 0 0-4 10 10 0 0 0-7-2zM7.5 12a1.5 1.5 0 1 0 0-3 1.5 1.5 0 0 0 0 3zM12 7.5a1.5 1.5 0 1 0 0-3 1.5 1.5 0 0 0 0 3zM16.5 12a1.5 1.5 0 1 0 0-3 1.5 1.5 0 0 0 0 3z' },
   'compare-model-overlay': { label: 'Compare',  icon: 'M4.5 4h5A1.5 1.5 0 0 1 11 5.5v13A1.5 1.5 0 0 1 9.5 20h-5A1.5 1.5 0 0 1 3 18.5v-13A1.5 1.5 0 0 1 4.5 4ZM15.5 4h5A1.5 1.5 0 0 1 22 5.5v13a1.5 1.5 0 0 1-1.5 1.5h-5a1.5 1.5 0 0 1-1.5-1.5v-13A1.5 1.5 0 0 1 15.5 4ZM10 8h4M10 16h4' },
@@ -1413,6 +1414,7 @@ const _AUTO_WIRE = {
   // don't add a second modalManager badge that lands at the right edge.
   'email-lib-modal':      { rail: null,             sidebar: null },
   'research-overlay':     { rail: 'rail-research',  sidebar: 'tool-research-btn' },
+  'creator-overlay':      { rail: 'rail-creator',   sidebar: 'tool-creator-btn' },
   'theme-modal':          { rail: null,             sidebar: 'tool-theme-btn' },
   'settings-modal':       { rail: null,             sidebar: 'tool-settings-btn' },
   'compare-model-overlay':{ rail: 'rail-compare',   sidebar: 'tool-compare-btn' },

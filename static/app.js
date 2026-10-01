@@ -173,6 +173,7 @@ function initRailHoverLabels() {
     'rail-compare': 'Compare',
     'rail-cookbook': 'Cookbook',
     'rail-research': 'Research',
+    'rail-creator': 'Creator',
     'rail-email': 'Email',
     'rail-gallery': 'Gallery',
     'rail-archive': 'Library',
@@ -1002,6 +1003,16 @@ function initializeEventListeners() {
         _startFreshChat();
         compareModule.toggleMode();
       }
+    });
+  }
+
+  // Creator window (docs/creator-plan.md, Phase 7). Loaded on first use.
+  const toolCreatorBtn = el('tool-creator-btn');
+  if (toolCreatorBtn) {
+    toolCreatorBtn.addEventListener('click', () => {
+      import('./js/creator/panel.js')
+        .then(mod => mod.toggle())
+        .catch(err => console.error('Creator window failed to load:', err));
     });
   }
 
@@ -3739,6 +3750,7 @@ function startOdysseusApp() {
   const _railToolMap = {
     'rail-compare':   'tool-compare-btn',
     'rail-research':  'tool-research-btn',
+    'rail-creator':   'tool-creator-btn',
     'rail-cookbook':   'tool-cookbook-btn',
     'rail-archive':   'tool-library-btn',
     'rail-gallery':   'tool-gallery-btn',
