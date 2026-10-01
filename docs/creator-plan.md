@@ -1,0 +1,105 @@
+# Creator Mode: Programming Plan
+
+Status: DRAFT. Based on reading the fork's code (deep research, agent loop, secret storage). Nothing has been built yet. Host access is decided: a helper program on the host, reached through a socket file (Phase 0, item 1, and Phase 6).
+Items marked **[CHECK]** are things I have not yet looked at, so I can't promise how big they are.
+
+## The idea in one paragraph
+A new mode, like Deep Research, called **Creator**. You give it a task. It works through the task using the server the way you would, keeps finding workarounds when it hits a problem, and only stops to ask you when it is truly blocked. When it finishes, it writes a report. A "Secrets" section holds passwords and tokens, each with an on/off switch. Root commands go through a server-side broker, so the agent never sees the root password.
+
+## Decisions to make before coding (Phase 0)
+1. **How does Creator reach the real server?** (the container is only a sandbox)
+   - A. SSH from the container to the host with a dedicated key and a dedicated user. Not chosen: each new connection adds a delay unless the connection is kept open (ControlMaster), and the socket helper does the same job faster. Kept as the fallback.
+   - B. Mount the Docker socket into the container. Simple, but it is effectively full root on the host, with no way to limit it.
+   - **C. A small helper program on the host, reached through a socket file shared with the container. CHOSEN.** It is fast (a local file, not a network connection), and it is also where the root-password idea fits, because the helper can add the password itself.
+   - Decision: **C**. If socket files turn out not to work across the shared folder, fall back to A with a kept-open connection.
+2. **Time limit per run** (suggested default: 60 minutes, adjustable).
+3. **Which actions always need your OK** even in Creator mode (suggested: none by default, but the list should exist and be editable).
+
+## Phase 1: Skeleton (the mode exists and runs)
+- [ ] **[CHECK]** Trace how the chat decides which mode a message runs in, and how the UI toggles/panels for research are wired. This sets the size of Phase 1.
+- [ ] New engine file `src/creator_mode.py`, modelled on `src/deep_research.py` (runs as a background job).
+- [ ] New routes: start, status, stop, report (modelled on `/api/research/*`).
+- [ ] New permission flag `can_use_creator`, off by default, modelled on `can_use_research`.
+- [ ] Job record in the database: task, status, start/end time, report, event log.
+- [ ] Engine runs the existing agent loop (`src/agent_loop.py`) with the round cap and tool-call cap set very high.
+
+## Phase 2: The "never give up" behaviour
+- [ ] Creator-specific instructions: "Try another approach when something fails. List what you tried. Ask the user only when blocked on something only they can give you, like a missing credential or a decision."
+- [ ] Failure tracking: if the same command fails the same way 3 times, force a different approach.
+- [ ] Progress notes written regularly, so a long run can't lose its place (and so the report is accurate).
+- [ ] Final report: what was asked, what was done, what worked, what didn't, what's left, and the exact commands run.
+- [ ] A genuine "I'm blocked" exit that pauses the job and notifies you, instead of ending it.
+
+## Phase 3: Safety net (build before anything powerful)
+- [ ] Hard time limit per run.
+- [ ] Stop button in the UI that kills the job immediately.
+- [ ] Live log in the UI showing every command as it runs.
+- [ ] Full audit log on disk (command, time, result), with secrets blanked out.
+- [ ] Optional protected-actions list (for example, commands that touch certain folders need your OK).
+- [ ] Only one Creator job at a time (to start with).
+
+## Phase 4: Secrets section
+- [ ] **[CHECK]** Read `src/secret_storage.py` properly and confirm it can hold arbitrary secrets, not just email passwords.
+- [ ] Database table: name, description, encrypted value, enabled (yes/no), last used.
+- [ ] Settings screen: add, edit, delete, and an on/off switch for each secret.
+- [ ] Agent tool `get_secret(name)`: the **server** checks the switch. If it is off, the call fails and the value never reaches the agent.
+- [ ] Every request is logged (allowed or denied).
+- [ ] Output scrubbing: any known secret value that appears in command output or chat is replaced with `[REDACTED]` before the agent sees it or it is saved.
+- [ ] Optional: "Creator may use this secret" is separate from "enabled," so some secrets can be limited to Creator runs only.
+
+## Phase 5: Root broker (the "run as root" idea)
+How it works: the agent never receives the root password. It calls `run_as_root(command)`. The server does the following:
+1. Checks that the root secret's switch is **on**. If it is off, the call fails.
+2. Asks the host helper (Phase 6) to run the command with `sudo`, and the password is fed in by the server side, never by the agent.
+3. Scrubs the output, logs the command, and returns the result.
+
+- [ ] Tool `run_as_root(command, reason)` with the server-side check.
+- [ ] Password is passed in via stdin only. It never goes on a command line, into an environment variable, or into logs.
+- [ ] Every root command is written to the audit log with the reason the agent gave.
+- [ ] Optional: a block-list of obviously destructive patterns (for example, wiping the root of the disk). This is a safety net, not real protection, so don't rely on it alone.
+- [ ] Known limit: root access is root access. The agent can still do damage with a command that looks harmless. The real protections are the on/off switch, the time limit, the log and the stop button.
+
+## Phase 6: Reaching outside the container (host helper over a socket file)
+- [ ] **[CHECK]** Re-read the compose file's shared `data` folder setup, and test that a socket file works across that mount. Sockets usually work over a bind mount on Linux, but this is not confirmed. First build a tiny "hello" helper that only answers over the socket, before any real command-running goes in.
+- [ ] On the host (you do this): create a dedicated user for the helper, for example `creator`, with limited sudo rights. The helper runs as this user, not your own account.
+- [ ] Helper service on the host, started outside Docker. It listens on a socket file inside the shared folder, for example `/home/madsen/odysseus/data/host-helper/helper.sock`. Only the container's user may use that file (strict permissions).
+- [ ] Narrow requests only: `run(command)` first, `run_as_root(command)` later. Every request has a time limit and returns the output.
+- [ ] Tool `host_exec(command)` in Odysseus: sends a `run` request to the helper. `run_as_root` (Phase 5) goes through the same socket.
+- [ ] Decide where the root switch is checked. Option 1: Odysseus checks it and passes the password to the helper over the socket (simpler). Option 2: the helper reads the switch itself (stronger, because a compromised app can't get around it). Not decided yet.
+- [ ] Helper audit log: every request and result written to a file you can read, with secrets blanked out.
+- [ ] Kill switch: stopping the helper cuts off all host access straight away.
+- [ ] Security note: anything that can write to the socket file can run commands on your host. The file's permissions and the dedicated host user are the main protections, so build them first.
+- [ ] Connection test button in settings (sends "hello" to the helper and shows the reply).
+
+## Phase 7: UI
+- [ ] **[CHECK]** Read how the research panel is built, to see how much UI code a new panel takes.
+- [ ] Creator toggle next to Research.
+- [ ] Creator panel: task box, start/stop, live log, report view.
+- [ ] Secrets screen (from Phase 4).
+
+## Phase 8: Testing
+- [ ] Harmless first task: "list the files in a folder and write a report."
+- [ ] Test a task that fails on purpose, to confirm it tries workarounds.
+- [ ] Test the secret switch: switch it off and confirm `get_secret` and `run_as_root` both fail.
+- [ ] Test that a secret never shows in logs, reports or chat history.
+- [ ] Test the stop button and the time limit.
+
+## Separate TODO: access to all tools within the same turn
+**Problem:** I get a smaller set of tools each turn than the server has switched on. When I need a tool that isn't in the set, you have to send a second message.
+
+- [ ] **[CHECK]** Find the code that picks which tools I get each turn. It isn't in the tools folder, so it is somewhere in the chat code.
+- [ ] Find out how it decides (my guess: the chat-bar toggles and the message text). I haven't confirmed that.
+- [ ] Decide on the fix. Options:
+  - Give every enabled tool on every turn (simplest, but a longer prompt costs more).
+  - Add a "load more tools" tool I can call mid-turn to pull in the ones I need.
+  - Always include a core set (shell, files, memory, teacher) and add the rest on demand.
+- [ ] Check the safety lock that blocks some tools after I read web pages or emails. Decide whether to keep it, loosen it, or leave it off in Creator mode.
+- [ ] Creator mode needs this fixed, since a run can't stop to wait for a second message.
+
+## Suggested build order
+Phase 0, then the "all tools in one turn" TODO (Creator depends on it), then Phases 3, 1, 2, 4, 6, 5, 7, 8. The safety net comes before anything powerful.
+
+## Working on the fork
+- Do this on a new branch, for example `creator-mode`, branched from `dev`. Keep `anthropic-model-fix` as it is.
+- The Creator code is mostly new files, so merging upstream updates should rarely clash.
+- After each phase: commit, push, rebuild with `sudo docker compose up -d --build`, test.
