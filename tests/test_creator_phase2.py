@@ -715,6 +715,45 @@ def test_progress_lines_are_not_repeated_under_other_notes(session_factory):
     assert job["state"]["notes"][-1]["text"] == "checked report.md"
 
 
+def test_heading_run_into_a_progress_line_is_still_a_section(session_factory):
+    """From the /var/www/html run: 'PROGRESS: ...layout.## What was done'
+    swallowed the heading into the note and emptied the section."""
+    calls = []
+    text = ("PROGRESS: The grep returned nothing. I'll look at the layout.## What was done\n"
+            "Edited one paragraph.\n## What worked\nByte-level replace.\n"
+            "## What didn't work\ngrep <p.\n## What's left\nNothing. STATUS: DONE")
+    script = [[("text", text)]]
+
+    async def run():
+        mgr = CreatorManager(session_factory=session_factory, agent_loop=scripted(script, calls))
+        job_id = mgr.start_job("t", "u", "m")
+        await _wait_finished(mgr, job_id)
+        return mgr.get_job(job_id)
+
+    job = asyncio.run(run())
+    data = job["state"]["report"]
+    assert data["done"] == "Edited one paragraph."
+    assert data["left"] == "Nothing."
+    assert job["state"]["notes"][-1]["text"] == "The grep returned nothing. I'll look at the layout."
+    assert "STATUS" not in job["report"]
+
+
+def test_inline_status_blocked_still_pauses(session_factory):
+    calls = []
+    script = [[("text", "I can't continue. STATUS: BLOCKED: need the SSH password")], [("text", REPORT)]]
+
+    async def run():
+        mgr = CreatorManager(session_factory=session_factory, agent_loop=scripted(script, calls))
+        job_id = mgr.start_job("t", "u", "m")
+        paused = await _wait_paused(mgr, job_id)
+        mgr.resume_job(job_id, answer="")
+        await _wait_finished(mgr, job_id)
+        return paused
+
+    paused = asyncio.run(run())
+    assert paused["state"]["pause"]["question"] == "need the SSH password"
+
+
 def test_parse_report_sections_accepts_heading_variants():
     out = parse_report_sections(
         "intro\n### What Was Done\na\n## **What did not work**\nb\n# What is left\nc\nSTATUS: DONE")

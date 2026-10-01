@@ -78,6 +78,17 @@ _MAX_COMMANDS = 2000
 _FLUSH_INTERVAL_S = 3.0
 
 _JOB_ID_RE = re.compile(r"^cr-[a-f0-9]{12}$")
+# Models sometimes run a marker into the previous line, e.g.
+# "PROGRESS: ...layout.## What was done" (seen in a real run: the heading was
+# swallowed into the note and the section went missing). These put report
+# headings and STATUS lines back on a line of their own before parsing.
+_INLINE_HEADING_RE = re.compile(r"(?<=[^\s#])[ \t]*(?=#{1,6}[ \t]+What\b)", re.I)
+_INLINE_STATUS_RE = re.compile(r"(?<=\S)[ \t]+(?=STATUS:[ \t]*(?:DONE|BLOCKED)\b)", re.I)
+
+
+def _split_inline_markers(text: str) -> str:
+    text = _INLINE_HEADING_RE.sub("\n", text or "")
+    return _INLINE_STATUS_RE.sub("\n", text)
 _NOTE_RE = re.compile(r"^[ \t>*-]*PROGRESS:\s*(.+?)\s*$", re.M | re.I)
 _STATUS_RE = re.compile(r"^[ \t>*]*STATUS:\s*(DONE|BLOCKED)\b[ \t:—-]*(.*?)\s*$", re.M | re.I)
 
@@ -326,7 +337,7 @@ def parse_report_sections(text: str) -> Dict[str, str]:
     (minus the STATUS line)."""
     sections: Dict[str, List[str]] = {}
     current = "other"
-    for line in (text or "").splitlines():
+    for line in _split_inline_markers(text).splitlines():
         # STATUS lines are control lines; PROGRESS lines are already in the
         # report's notes section (they used to show up twice).
         if _STATUS_RE.match(line) or _NOTE_RE.match(line):
@@ -830,7 +841,7 @@ class CreatorManager:
                 upto = len(text) if final else text.rfind("\n") + 1
                 if upto <= harvested[0]:
                     return
-                for m in _NOTE_RE.finditer(text[harvested[0]:upto]):
+                for m in _NOTE_RE.finditer(_split_inline_markers(text[harvested[0]:upto])):
                     add_note(m.group(1), "agent")
                 harvested[0] = upto
 
@@ -958,7 +969,7 @@ class CreatorManager:
             text = "".join(text_parts).strip()
             ending["text"] = text
             if ending["end"] == "done":
-                status_lines = list(_STATUS_RE.finditer(text))
+                status_lines = list(_STATUS_RE.finditer(_split_inline_markers(text)))
                 if status_lines and status_lines[-1].group(1).upper() == "BLOCKED":
                     need = status_lines[-1].group(2) or "The agent says it is blocked."
                     ending = {"end": "blocked", "text": text, "pause": {
