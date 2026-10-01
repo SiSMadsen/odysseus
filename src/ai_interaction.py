@@ -141,12 +141,17 @@ def _resolve_model(spec: str, owner: Optional[str] = None, model_type: Optional[
             headers = build_headers(api_key, base)
 
             if provider == "anthropic":
-                # Anthropic: match against hardcoded model list
-                matched = None
-                for am in ANTHROPIC_MODELS:
-                    if model_name.lower() in am.lower() or am.lower() in model_name.lower():
-                        matched = am
-                        break
+                # Anthropic: match against the endpoint's stored models first,
+                # then the built-in list. Exact matches win over partial ones.
+                stored = _json_list(getattr(ep, "cached_models", None))
+                candidates = stored + [m for m in ANTHROPIC_MODELS if m not in stored]
+                want = model_name.lower()
+                matched = next((m for m in candidates if m.lower() == want), None)
+                if not matched:
+                    matched = next(
+                        (m for m in candidates if want in m.lower() or m.lower() in want),
+                        None,
+                    )
                 if matched:
                     return build_chat_url(base), matched, headers
             else:

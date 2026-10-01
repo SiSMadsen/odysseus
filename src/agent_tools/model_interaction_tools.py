@@ -155,7 +155,10 @@ async def list_models(content: str, session_id: Optional[str] = None, owner: Opt
 
             model_ids = []
             if provider == "anthropic":
-                model_ids = list(ANTHROPIC_MODELS)
+                try:
+                    model_ids = json.loads(ep.cached_models or "[]") or list(ANTHROPIC_MODELS)
+                except Exception:
+                    model_ids = list(ANTHROPIC_MODELS)
             else:
                 try:
                     models_url = build_models_url(base)
