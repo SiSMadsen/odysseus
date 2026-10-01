@@ -1,6 +1,6 @@
 # Creator Mode: Programming Plan
 
-Status (2026-10-01, branch `creator-mode`): Phases 1, 2, 3 and 4 are built, tested, and smoke-tested against a real model in the Docker container. The "all tools in one turn" TODO is done. **Next: Phase 6, step 6a (hello-only helper).** Phases 5, 7 and 8 are not started.
+Status (2026-10-01, branch `creator-mode`): Phases 1, 2, 3 and 4 are built, tested, and smoke-tested against a real model in the Docker container. The "all tools in one turn" TODO is done. **Now: Phase 7 (the Creator window), before Phase 6.** Step 7a (history route) is done. Phases 5, 6 and 8 are not started.
 Items marked **[CHECK]** are things not yet looked at, so their size isn't known.
 
 ## Purpose, scope and safeguards (read this first)
@@ -140,12 +140,22 @@ How it works: the agent never receives the root password. It calls `run_as_root(
 - [ ] Kill switch: stopping the helper cuts off all host access straight away.
 - [ ] Security note: anything that can write to the socket file can run commands on your host. The file's permissions and the dedicated host user are the main protections, so build them first.
 - [ ] Connection test button in settings (sends "hello" to the helper and shows the reply).
+- **Found while planning Phase 7 (2026-10-01):**
+  - **The socket can't live in `data/`.** On every start, `docker/entrypoint.sh` (`repair_tree_ownership`) changes the owner of everything under `/app/data` to the container user (PUID, 1000). A `creator`-owned socket folder there would be taken over. Use a separate bind mount outside `data/`, e.g. host `/run/creator-helper`, which the entrypoint doesn't touch.
+  - **The agent's bash can reach the socket directly.** The Odysseus server and the agent's bash run as the same uid (1000) in the container, so `SO_PEERCRED` can't tell them apart, and bash could talk to the helper without going through `host_exec` (skipping its approvals, protected paths and the app's audit log). A token held by the server doesn't fix it: the host's `kernel.yama.ptrace_scope` is 0, so a same-uid process can read the server's memory. The helper's own limits (fixed request types, time and output limits, its own audit log, the kill switch) are the real boundary, the same "tripwire, not a wall" situation as Phase 4. Running the agent's bash as a separate uid would close it; not decided.
 
-## Phase 7: UI
-- [ ] **[CHECK]** Read how the research panel is built, to see how much UI code a new panel takes.
-- [ ] Creator toggle next to Research.
-- [ ] Creator panel: task box, start/stop, live log, report view.
-- [ ] Secrets screen (from Phase 4).
+## Phase 7: UI (Creator window) — IN PROGRESS
+**Decision: Phase 7 before Phase 6.** Stop, pause/approve, the live log and the deadline exist on the server but are only usable with curl. Phase 6b gives the agent real host access, and watching a run (and stopping it) should be easy before then. Phase 8's stop and time-limit tests need the UI too.
+
+**Decision: Creator is its own window, not a chat-bar toggle.** It opens from the sidebar (Tools, next to Deep Research) and the icon rail, as a window like Research's. Inside it you chat with Creator: your task is the first message, progress notes, commands and pauses come in as the run goes, and the report is the last message. It has a **job history** list of your past jobs. Creator doesn't go through `chat_routes`, so a chat-bar toggle would only have redirected Send.
+
+- [x] **[CHECK]** Read how the research panel is built. Findings: it's an overlay built on demand (`static/js/research/panel.js`, `openPanel()` creates `#research-overlay` with a `.modal-content` pane, draggable by its header, minimize/close buttons). Wiring is spread over: the sidebar item and rail button in `static/index.html`, the click handler and `_railToolMap` in `static/app.js`, the modal registry and `_AUTO_WIRE` in `static/js/modalManager.js` (dock chip when minimized), `static/js/ui_visibility.js`, `static/js/keyboard-shortcuts.js`, and privilege hiding in `static/js/init.js`. The research panel is ~1,640 lines; Creator's should be a third of that.
+- [x] **7a: history route.** `GET /api/creator/jobs?limit=N` (default 50, max 200): the caller's jobs, newest first, with id, task (first 300 chars), status (live for a running job), times, model and whether there's a report. No events or report text.
+- [ ] **7b: the window.** Sidebar item and rail button (hidden without `can_use_creator`), modal registration, history list beside a conversation view, a composer that starts a job (time limit and "approve untrusted up front" as options). Opening a past job shows its task, events and report.
+- [ ] **7c: live run.** The SSE stream (reconnects with `?since=N`), status pill, deadline countdown, Stop.
+- [ ] **7d: pauses.** An approval card with the choices the pause allows (no `approve_job` for protected paths), and the composer answers questions and `BLOCKED`.
+- [x] Secrets screen (done in Phase 4: Settings > Secrets).
+- Not shown live: the model's own text between tool calls. The engine drops text deltas; only `PROGRESS:` notes, tool calls, pauses and the report reach the event log. Adding a per-round text event is possible later if the window feels too quiet.
 
 ## Phase 8: Testing
 - [ ] Harmless first task: "list the files in a folder and write a report."
@@ -180,7 +190,7 @@ How it works: the agent never receives the root password. It calls `run_as_root(
 - [x] Creator mode needs this fixed, since a run can't stop to wait for a second message. Done with the above.
 
 ## Suggested build order
-Phase 0, then the "all tools in one turn" TODO (Creator depends on it), then Phases 3, 1, 2, 4, 6, 5, 7, 8. The safety net comes before anything powerful.
+Phase 0, then the "all tools in one turn" TODO (Creator depends on it), then Phases 3, 1, 2, 4, 7, 6, 5, 8. The safety net comes before anything powerful (7 moved ahead of 6 on 2026-10-01: see Phase 7).
 
 ## Working on the fork
 - Do this on a new branch, for example `creator-mode`, branched from `dev`. Keep `anthropic-model-fix` as it is.

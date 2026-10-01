@@ -165,6 +165,12 @@ def setup_creator_routes(creator_manager: CreatorManager) -> APIRouter:
             "approve_untrusted": body.approve_untrusted,
         }
 
+    @router.get("/api/creator/jobs")
+    async def creator_jobs(request: Request, limit: int = 50):
+        """The caller's jobs, newest first: the Creator window's history."""
+        user = _require_creator_user(request)
+        return {"jobs": creator_manager.list_jobs(user, limit=limit)}
+
     @router.get("/api/creator/status/{job_id}")
     async def creator_status(job_id: str, request: Request, since: int = 0):
         """Job status plus the events after sequence number `since`."""

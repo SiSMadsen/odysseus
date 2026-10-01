@@ -86,6 +86,10 @@ _AUDIT_OUTPUT_CHARS = 100_000
 _MAX_EVENTS = 2000
 _MAX_NOTES = 300
 _MAX_COMMANDS = 2000
+# The history list (GET /api/creator/jobs): most jobs per request, and how
+# much of each task it shows.
+MAX_LIST_JOBS = 200
+_LIST_TASK_CHARS = 300
 # Flush the event log / state to the database at most this often (seconds).
 _FLUSH_INTERVAL_S = 3.0
 
@@ -519,6 +523,35 @@ class CreatorManager:
             job["status"] = "paused" if live.get("pause") else "running"
             job["max_minutes"] = live["max_minutes"]
         return job
+
+    def list_jobs(self, owner: str, limit: int = 50) -> List[dict]:
+        """The owner's jobs, newest first, without events or report text (the
+        Creator window's history list)."""
+        limit = max(1, min(int(limit), MAX_LIST_JOBS))
+        db = self._session_factory()
+        try:
+            q = db.query(CreatorJob.id, CreatorJob.task, CreatorJob.status, CreatorJob.started_at,
+                         CreatorJob.finished_at, CreatorJob.model, CreatorJob.report.isnot(None))
+            # start_job stores an empty owner (auth off) as NULL.
+            q = q.filter(CreatorJob.owner == owner) if owner else q.filter(CreatorJob.owner.is_(None))
+            rows = q.order_by(CreatorJob.started_at.desc()).limit(limit).all()
+        finally:
+            db.close()
+        jobs = []
+        for job_id, task, status, started, finished, model, has_report in rows:
+            live = self._live.get(job_id)
+            if live is not None and status in ACTIVE_STATUSES:
+                status = "paused" if live.get("pause") else "running"
+            jobs.append({
+                "job_id": job_id,
+                "task": _truncate(task, _LIST_TASK_CHARS),
+                "status": status,
+                "started_at": started.isoformat() + "Z" if started else None,
+                "finished_at": finished.isoformat() + "Z" if finished else None,
+                "model": model,
+                "has_report": bool(has_report),
+            })
+        return jobs
 
     def is_running(self, job_id: str) -> bool:
         """True while the job's task is alive — running or paused."""

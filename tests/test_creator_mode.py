@@ -425,6 +425,31 @@ def test_start_status_report_and_owner_scope(routed):
     assert "done" in rep["report"]
 
 
+def test_jobs_list_is_owner_scoped_newest_first(routed, session_factory):
+    from datetime import datetime
+    mgr, router = routed
+    jobs = _route(router, "/api/creator/jobs", "GET")
+    db = session_factory()
+    for job_id, owner, day in (("cr-000000000001", "alice", 1), ("cr-000000000002", "bob", 2),
+                               ("cr-000000000003", "alice", 3), ("cr-000000000004", None, 4)):
+        db.add(CreatorJob(id=job_id, owner=owner, task="t" * 400, status="done",
+                          started_at=datetime(2026, 9, day), report="r" if day == 3 else None))
+    db.commit()
+    db.close()
+
+    out = asyncio.run(jobs(request=_request("alice", ALLOWED), limit=50))["jobs"]
+    assert [j["job_id"] for j in out] == ["cr-000000000003", "cr-000000000001"]
+    assert out[0]["has_report"] is True and out[1]["has_report"] is False
+    assert len(out[0]["task"]) < 400 and "events" not in out[0]
+    assert out[0]["started_at"] == "2026-09-03T00:00:00Z"
+    assert len(asyncio.run(jobs(request=_request("alice", ALLOWED), limit=0))["jobs"]) == 1
+    # Auth off: the empty owner sees only ownerless jobs.
+    assert [j["job_id"] for j in mgr.list_jobs("")] == ["cr-000000000004"]
+    with pytest.raises(HTTPException) as exc:
+        asyncio.run(jobs(request=_request("carol", {}), limit=50))
+    assert exc.value.status_code == 403
+
+
 def test_second_start_is_409_while_a_job_runs(session_factory, monkeypatch):
     monkeypatch.setattr(creator_routes, "require_user", lambda request: request.state.current_user)
     monkeypatch.setattr(creator_routes, "_resolve_creator_endpoint",
