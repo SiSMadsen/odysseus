@@ -700,6 +700,7 @@ Generate an image. Line 1 = description, line 2 = model name, line 3 = WxH (e.g.
     "manage_research": "- ```manage_research``` — List, read/open, or delete saved DEEP RESEARCH results from the Library. Args (JSON): {\"action\": \"list|read|delete\", \"id\": \"<id>\", \"search\": \"...\"}. `list` returns rows like `[query](#research-<id>) — N sources` MOST-RECENT FIRST; the user clicks to open. `read` (aliases: open/view/get) takes `id` and returns the report text + sources. Use when the user says \"open/read/find/delete my research\" or \"that report\". This IS how you read a finished report: when the user refers to a just-completed deep-research job (\"check it out\", \"read that report\", \"summarize the research\") WITHOUT giving an id, call `manage_research` with `action:list` to get the most-recent id, then `action:read` with that id, and answer from the returned text. Do NOT `web_fetch`/`app_api` the `/api/research/report/{id}` URL — that endpoint renders HTML for the browser, not clean text — and do NOT start a fresh `web_search`/`trigger_research` just to read an existing report. To START new research, use trigger_research instead.",
     "load_tools": "- ```load_tools``` — Your tool list for this turn is a selection. If you need a tool that isn't in it, load it instead of giving up or asking the user to send another message. Args (JSON): {\"names\": [\"send_email\"]} loads tools (usable from your next step); {\"search\": \"email\"} lists matching tool names; {} lists all loadable tools.",
     "get_secret": "- ```get_secret``` — Creator mode only. Get a password/token the user stored in Settings > Secrets. Args (JSON): {\"name\": \"<secret name>\"}. Fails if the secret is switched off — then tell the user which secret you need switched on. Never echo the value or write it into files, notes or the report; pass it straight to the command that needs it.",
+    "host_exec": "- ```host_exec``` — Creator mode only. Run ONE shell command on the HOST machine (outside the container) as the unprivileged user `creator`. Args (JSON): {\"command\": \"<shell command>\", \"timeout_s\": 120}. No stdin, fresh shell each call, background processes are stopped when it ends. Each call waits for the user's OK unless they allowed all host commands for this job.",
     "manage_settings": "- ```manage_settings``` — View/change the REAL app settings (same ones the Settings panel writes) AND turn tools on/off. Change a setting: `{\"action\":\"set\",\"key\":\"...\",\"value\":\"...\"}` — keys accept friendly aliases, e.g. voice→tts_voice, \"search engine\"→search_provider, \"default model\"→default_model, \"teacher model\"→teacher_model, \"task/background model\"→task_model, \"image quality\"→image_quality, \"reminder channel\"→reminder_channel (browser|email|ntfy), \"agent timeout\"/\"max tool calls\"/\"token budget\". Read: `{\"action\":\"get\",\"key\":\"...\"}`; see all: `{\"action\":\"list\"}`; reset one: `{\"action\":\"reset\",\"key\":\"...\"}`. Use this when the user asks to change ANY preference instead of making them open Settings. Secrets/API keys are read-only (tell them to set those in the panel). Tool toggles: `{\"action\":\"disable_tool|enable_tool\",\"tool\":\"shell\"}` (aliases: shell/search/browser/documents/memory/skills/images/tasks/notes/calendar/email), list disabled: `{\"action\":\"list_tools\"}`.",
     "manage_notes": """\
 ```manage_notes
@@ -3456,6 +3457,7 @@ async def stream_agent_loop(
     tool_refusal_check=None,
     tool_result_hook=None,
     untrusted_gate_bypassed: bool = False,
+    caller_approved_check=None,
 ) -> AsyncGenerator[str, None]:
     """Streaming agent loop generator.
 
@@ -3486,6 +3488,7 @@ async def stream_agent_loop(
         ),
         delegated_credential=bool(delegated_credential),
         protected_action_check=protected_action_check,
+        caller_approved_check=caller_approved_check,
     )
     mcp_mgr = get_mcp_manager()
     prep_timings: Dict[str, float] = {}

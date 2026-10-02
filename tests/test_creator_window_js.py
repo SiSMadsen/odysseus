@@ -52,7 +52,7 @@ def test_tool_output_joins_its_start_and_rounds_are_dropped():
     assert [i["kind"] for i in items] == ["command", "command"]
     bash, read = items
     assert bash == {"kind": "command", "tool": "bash", "command": "ls /", "output": "bin\netc",
-                    "exitCode": 0, "approved": False, "done": True}
+                    "exitCode": 0, "approved": False, "done": True, "host": False}
     assert read["exitCode"] == 2 and read["done"] is True
 
 
@@ -177,6 +177,37 @@ def test_reply_controls_follow_the_pause():
     assert out["blocked"]["buttons"] == [] and "needs" in out["blocked"]["placeholder"]
     assert out["none"] == [None, None]
     assert out["send"] == ["Carry on without an answer", "Carry on without an answer", "Send"]
+
+
+@needs_node
+def test_host_commands_read_plainly_and_say_where_they_run():
+    out = _run(textwrap.dedent(f"""
+        const v = await import('{_VIEW}');
+        const cmd = JSON.stringify({{command: 'systemctl reload apache2', timeout_s: 30}});
+        const items = v.buildTimeline([
+          {{type: 'tool_start', tool: 'host_exec', command: cmd}},
+          {{type: 'tool_output', tool: 'host_exec', command: cmd, output: '', exit_code: 0}},
+          {{type: 'tool_start', tool: 'bash', command: '{{"command": "x"}}'}},
+        ]);
+        const host = v.replyControls({{kind: 'approval', scope: 'host', protected: false,
+                                      choices: ['approve_once', 'approve_job', 'deny']}});
+        const untrusted = v.replyControls({{kind: 'approval', scope: 'untrusted',
+                                           choices: ['approve_once', 'approve_job', 'deny']}});
+        console.log(JSON.stringify({{
+          items: items.map(i => [i.host, v.displayCommand(i.tool, i.command)]),
+          action: v.describeAction({{tool: 'host_exec', command: cmd}}),
+          bare: v.displayCommand('host_exec', 'uptime'),
+          host: [host.buttons.map(b => b.label), host.notice],
+          untrusted: untrusted.buttons.map(b => b.label),
+        }}));
+    """))
+    assert out["items"] == [[True, "systemctl reload apache2"], [False, '{"command": "x"}']]
+    assert out["action"] == "host_exec: systemctl reload apache2"
+    assert out["bare"] == "uptime"
+    labels, notice = out["host"]
+    assert labels == ["Allow once", "Allow all host commands for this job", "Deny"]
+    assert "host machine" in notice
+    assert out["untrusted"] == ["Approve once", "Approve for this job", "Deny"]
 
 
 @needs_node

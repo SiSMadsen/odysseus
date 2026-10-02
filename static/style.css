@@ -41608,3 +41608,4 @@ body.settings-sidebar-resize-active {
   max-width: 180px; padding: 3px 6px; border-radius: 6px; border: 1px solid var(--border);
   background: var(--bg); color: var(--fg); font: inherit;
 }
+.creator-chip.host { color: var(--accent, var(--red)); border-color: currentColor; }

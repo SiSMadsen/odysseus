@@ -818,7 +818,8 @@ function _renderItem(item) {
       }
       const summary = make('summary', {}, [
         make('span', { class: 'creator-cmd-tool', text: item.tool }),
-        make('code', { class: 'creator-cmd-text', text: item.command || '(no command text)' }),
+        item.host ? make('span', { class: 'creator-chip host', text: 'host', title: 'Ran on the host machine as creator' }) : null,
+        make('code', { class: 'creator-cmd-text', text: view.displayCommand(item.tool, item.command) || '(no command text)' }),
         item.approved ? make('span', { class: 'creator-chip approved', text: 'approved' }) : null,
         make('span', { class: `creator-chip exit ${exitCls}`, text: exitText }),
       ]);

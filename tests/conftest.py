@@ -17,6 +17,12 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 # file-backed DB across processes - tests needing that must set DATABASE_URL.
 os.environ.setdefault("DATABASE_URL", "sqlite:///:memory:")
 
+# Creator jobs probe the host helper's socket at start (Phase 6b). Point the
+# probe at a path that never exists, so tests run the same inside a container
+# where the real helper is installed. Tests that want a helper start one on a
+# temporary socket or inject a fake.
+os.environ.setdefault("CREATOR_HELPER_SOCKET", "/nonexistent/creator-helper-test.sock")
+
 # Pre-import real heavy modules BEFORE any test file's module-level stubs can
 # replace them with MagicMock. Some test files (e.g. test_llm_core_sanitize_*)
 # stub sqlalchemy/core.database at module scope with `if mod not in sys.modules`,

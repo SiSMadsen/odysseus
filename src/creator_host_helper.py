@@ -99,3 +99,71 @@ async def run(command: str, timeout_s: int = 120, redact=None, path: Optional[st
     if values:
         payload["redact"] = values[:200]
     return await request(payload, path=path, reply_timeout=float(timeout_s) + _RUN_REPLY_GRACE_S)
+
+
+# ---------------------------------------------------------------------------
+# The host_exec agent tool (Creator mode only)
+# ---------------------------------------------------------------------------
+
+_DEFAULT_TOOL_TIMEOUT_S = 120
+_MAX_TOOL_TIMEOUT_S = 600
+
+
+def parse_host_exec_args(content):
+    """(command, timeout_s) from {"command": ..., "timeout_s": ...} or a bare
+    command string. Raises ValueError with a message for the model."""
+    timeout = _DEFAULT_TOOL_TIMEOUT_S
+    if isinstance(content, dict):
+        args = content
+    else:
+        raw = (content or "").strip()
+        args = None
+        if raw.startswith("{"):
+            try:
+                args = json.loads(raw)
+            except ValueError:
+                args = None
+        if not isinstance(args, dict):
+            args = {"command": raw}
+    command = args.get("command")
+    if not isinstance(command, str) or not command.strip():
+        raise ValueError('Missing command. Use {"command": "<shell command>", "timeout_s": 120}.')
+    t = args.get("timeout_s", timeout)
+    if isinstance(t, (int, float)) and not isinstance(t, bool):
+        timeout = max(1, min(int(t), _MAX_TOOL_TIMEOUT_S))
+    return command, timeout
+
+
+def format_run_result(reply: dict) -> dict:
+    """The helper's run reply as a tool result: {"output", "exit_code"}."""
+    parts = []
+    if reply.get("stdout"):
+        parts.append(reply["stdout"].rstrip("\n"))
+    if reply.get("stderr"):
+        parts.append("[stderr]\n" + reply["stderr"].rstrip("\n"))
+    notes = []
+    if reply.get("timed_out"):
+        notes.append(f"stopped at the time limit after {reply.get('duration_s')} s")
+    if reply.get("truncated"):
+        notes.append(f"output cut (stdout {reply.get('stdout_bytes')} bytes, stderr {reply.get('stderr_bytes')} bytes)")
+    if notes:
+        parts.append("[host_exec: " + "; ".join(notes) + "]")
+    code = reply.get("exit_code")
+    if reply.get("timed_out") and (code is None or code == 0):
+        code = 124
+    return {"output": "\n".join(parts) or "(no output)", "exit_code": code if code is not None else 1}
+
+
+async def do_host_exec(content, owner: Optional[str] = None, session_id: Optional[str] = None) -> dict:
+    """Run a command on the HOST (outside the container) as the `creator` user,
+    through the host helper. Only inside a running Creator job; the job's
+    approval gate decides before this is reached."""
+    try:
+        command, timeout_s = parse_host_exec_args(content)
+    except ValueError as e:
+        return {"error": str(e), "exit_code": 1}
+    from src.creator_mode import get_active_manager
+    manager = get_active_manager()
+    if manager is None:
+        return {"error": "host_exec only works inside a running Creator job.", "exit_code": 1}
+    return await manager.run_on_host(session_id, owner, command, timeout_s)

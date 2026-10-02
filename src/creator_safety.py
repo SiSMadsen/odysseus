@@ -100,6 +100,10 @@ class Redactor:
         }
         self._values = sorted(merged, key=len, reverse=True)
 
+    def known_values(self) -> List[str]:
+        """The exact values this redactor blanks (for the host helper's log)."""
+        return list(self._values)
+
     def _replace_known(self, value: str) -> str:
         for secret in self._values:
             if secret in value:

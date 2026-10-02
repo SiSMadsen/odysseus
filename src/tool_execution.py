@@ -1249,6 +1249,10 @@ async def _execute_tool_block_impl(
         from src.creator_secrets import do_get_secret
         desc = "get_secret"
         result = await do_get_secret(content, owner=owner, session_id=session_id)
+    elif tool == "host_exec":
+        from src.creator_host_helper import do_host_exec
+        desc = "host_exec"
+        result = await do_host_exec(content, owner=owner, session_id=session_id)
     elif tool == "manage_research":
         desc = "manage_research"
         result = await do_manage_research(content, owner=owner)

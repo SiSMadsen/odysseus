@@ -70,6 +70,7 @@ _COMMON_TOOL_NAMES = {
     "edit_image",
     "generate_image",
     "get_secret",
+    "host_exec",
     "load_tools",
     "glob",
     "grep",

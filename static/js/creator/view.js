@@ -17,6 +17,19 @@ export const STATUS_LABELS = {
 
 export const ACTIVE_STATUSES = ['running', 'paused'];
 
+export const HOST_TOOL = 'host_exec';
+
+/** The command as you'd type it: host_exec's JSON args become the bare command. */
+export function displayCommand(tool, command) {
+  const text = command == null ? '' : String(command);
+  if (tool !== HOST_TOOL) return text;
+  try {
+    const args = JSON.parse(text);
+    if (args && typeof args.command === 'string') return args.command;
+  } catch (_) { /* a bare command string */ }
+  return text;
+}
+
 export function statusLabel(status) {
   return STATUS_LABELS[status] || String(status || 'Unknown');
 }
@@ -74,6 +87,7 @@ export function buildTimeline(events) {
         const it = {
           kind: 'command', tool: ev.tool || 'tool', command: ev.command || '',
           output: '', exitCode: null, approved: !!ev.approved, done: false,
+          host: ev.tool === HOST_TOOL,
         };
         items.push(it);
         open.push(it);
@@ -82,7 +96,8 @@ export function buildTimeline(events) {
       case 'tool_output': {
         let it = takeOpen(ev.tool || 'tool', ev.command || '');
         if (!it) {
-          it = { kind: 'command', tool: ev.tool || 'tool', command: ev.command || '', approved: false };
+          it = { kind: 'command', tool: ev.tool || 'tool', command: ev.command || '', approved: false,
+                 host: ev.tool === HOST_TOOL };
           items.push(it);
         }
         it.output = ev.output == null ? '' : String(ev.output);
@@ -133,7 +148,7 @@ export function buildTimeline(events) {
 export function describeAction(action) {
   if (!action || typeof action !== 'object') return '';
   const tool = action.tool || action.name || '';
-  const detail = action.command || action.content || action.path || '';
+  const detail = displayCommand(tool, action.command || action.content || action.path || '');
   if (tool && detail) return `${tool}: ${detail}`;
   return tool || String(detail || '');
 }
@@ -211,6 +226,20 @@ const CHOICE_HINTS = {
   deny: "Don't run it. Creator is told to find another way.",
 };
 
+// A host command (Phase 6b: pause.scope === 'host'): "for this job" lifts the
+// host-command gate, not the untrusted-content one.
+const HOST_CHOICE_LABELS = {
+  approve_once: 'Allow once',
+  approve_job: 'Allow all host commands for this job',
+  deny: 'Deny',
+};
+
+const HOST_CHOICE_HINTS = {
+  approve_once: 'Run this one command on the host, then ask again for the next.',
+  approve_job: 'Run it, and run the rest of this job\'s host commands without asking. Protected paths still ask every time.',
+  deny: "Don't run it. Creator is told to find another way.",
+};
+
 /**
  * What the reply bar offers for a pause (the `pause` object from /status).
  *   approval:          {mode: 'approval', buttons: [{label, hint, decision, tone}], placeholder, notice}
@@ -226,13 +255,17 @@ export function replyControls(pause) {
     return {
       mode: 'approval',
       buttons: choices.filter(c => CHOICE_LABELS[c]).map(c => ({
-        label: CHOICE_LABELS[c], hint: CHOICE_HINTS[c], decision: c,
+        label: (pause.scope === 'host' ? HOST_CHOICE_LABELS : CHOICE_LABELS)[c],
+        hint: (pause.scope === 'host' ? HOST_CHOICE_HINTS : CHOICE_HINTS)[c],
+        decision: c,
         tone: c === 'deny' ? 'deny' : 'approve',
       })),
       placeholder: 'Optional note for Creator, sent with your choice',
       notice: pause.protected
         ? 'This touches a protected path, so it can only be approved one action at a time.'
-        : '',
+        : pause.scope === 'host'
+          ? 'This command runs on the host machine, outside the container, as the user creator.'
+          : '',
     };
   }
   const options = (Array.isArray(pause.options) ? pause.options : [])

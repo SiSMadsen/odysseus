@@ -154,6 +154,28 @@ user>` instead.
 """
 
 
+# Phase 6b: commands on the host, through the host helper.
+HOST_EXEC_TOOL = "host_exec"
+HOST_GATE_REASON = ("Host command: Creator asks before each command it runs on the host "
+                    "(unless you've allowed all host commands for this job).")
+CREATOR_HOST_PROMPT = """
+The host machine:
+- Your bash, python and file tools run inside the Odysseus container, a \
+sandbox. To work on the real host machine, use `host_exec` with \
+{"command": "...", "timeout_s": 120}. It runs one shell command on the host \
+as the unprivileged user `creator`, in /srv/creator-helper/work, with no \
+stdin (nothing interactive), and returns its output and exit code. Each call \
+is a fresh shell: `cd` and variables don't carry over, and anything it \
+starts in the background is stopped when it ends.
+- Every host command waits for the user's OK unless they've allowed all \
+host commands for this job. Keep each one purposeful and explain it in a \
+PROGRESS line.
+- `creator` can only do what it has been allowed on the host. A "Permission \
+denied" there is a limit, not a puzzle: don't look for ways around it. Say \
+what access is missing in the report.
+"""
+
+
 class CreatorBusyError(RuntimeError):
     """Another Creator job is already running (or paused)."""
 
@@ -434,10 +456,13 @@ class CreatorManager:
         audit_directory=None,
         secret_store: Optional[SecretStore] = None,
         tool_executor: Optional[Callable] = None,
+        host_helper=None,
     ):
         global _active_manager
         self._session_factory = session_factory
         self._agent_loop = agent_loop
+        # Module-like object with async hello() and run() (src/creator_host_helper).
+        self._host_helper = host_helper
         self._audit_directory = audit_directory
         self._tool_executor = tool_executor
         self.secrets = secret_store or SecretStore(session_factory)
@@ -584,7 +609,7 @@ class CreatorManager:
         if not pause:
             return None
         return {k: pause.get(k) for k in
-                ("kind", "question", "options", "action", "protected", "choices", "since")}
+                ("kind", "question", "options", "action", "protected", "scope", "choices", "since")}
 
     def _state_snapshot(self, live: dict) -> dict:
         return {
@@ -670,8 +695,23 @@ class CreatorManager:
             "tainted": False, "gate_bypassed": bool(approve_untrusted),
             "loaded_tools": set(),
             "pause": None, "resume_event": None, "resume_payload": None,
-            "protected_check": make_protected_action_check(protected_paths),
+            "path_check": make_protected_action_check(protected_paths),
+            # Phase 6b: set at job start when the host helper answers.
+            "host_available": False, "host_all_approved": False,
         }
+        live = self._live[job_id]
+
+        def gate(tool_name, content):
+            """Protected paths first (never lifted), then: every host command
+            asks until the user allows all host commands for this job."""
+            reason = live["path_check"](tool_name, content) if live["path_check"] else None
+            if reason:
+                return reason
+            if tool_name == HOST_EXEC_TOOL and not live["host_all_approved"]:
+                return HOST_GATE_REASON
+            return None
+
+        live["protected_check"] = gate
 
         bg = asyncio.create_task(self._run(
             job_id, task, endpoint_url, model, headers or {}, owner,
@@ -681,6 +721,32 @@ class CreatorManager:
         bg.add_done_callback(lambda _t, jid=job_id: self._tasks.pop(jid, None))
         logger.info("Creator: started job %s (owner=%r, model=%s, limit=%dm)", job_id, owner, model, minutes)
         return job_id
+
+    async def run_on_host(self, job_id: Optional[str], owner: Optional[str],
+                          command: str, timeout_s: int) -> dict:
+        """host_exec's entry point. The run asking must be an active Creator job
+        of the same owner with the host helper connected; the job's approval
+        gate has already let this exact command through. The run's known secret
+        values go along so the helper blanks them in its own log."""
+        live = self._live.get(job_id or "") if is_valid_job_id(job_id or "") else None
+        if (live is None or not self.is_running(job_id)
+                or live.get("owner", "") != (owner or "")):
+            return {"error": "host_exec only works inside a running Creator job.", "exit_code": 1}
+        if not live.get("host_available"):
+            return {"error": "The host helper isn't connected for this job, so host_exec isn't "
+                             "available. Say so in the report.", "exit_code": 1}
+        helper = self._host_helper
+        if helper is None:
+            from src import creator_host_helper as helper
+        from src.creator_host_helper import HelperError, format_run_result
+        try:
+            reply = await helper.run(command, timeout_s=timeout_s,
+                                     redact=live["redactor"].known_values())
+        except HelperError as e:
+            return {"error": f"Host helper: {e}", "exit_code": 1}
+        if not reply.get("ok"):
+            return {"error": f"Host helper refused: {reply.get('error') or 'no reason given'}", "exit_code": 1}
+        return format_run_result(reply)
 
     def request_secret(self, job_id: Optional[str], owner: Optional[str], name: str) -> dict:
         """get_secret's entry point. The run asking must be an active Creator
@@ -877,6 +943,31 @@ class CreatorManager:
         if agent_loop is None:
             from src.agent_loop import stream_agent_loop as agent_loop
 
+        def job_tools() -> set:
+            tools = set(CREATOR_CORE_TOOLS) | live["loaded_tools"]
+            if live["host_available"]:
+                tools.add(HOST_EXEC_TOOL)
+            return tools
+
+        def system_prompt() -> str:
+            return CREATOR_SYSTEM_PROMPT + (CREATOR_HOST_PROMPT if live["host_available"] else "")
+
+        async def probe_host() -> None:
+            """Offer host_exec only when the host helper answers and can run."""
+            helper = self._host_helper
+            if helper is None:
+                from src import creator_host_helper as helper
+            try:
+                res = await helper.hello()
+            except Exception as e:   # never let the probe break a job
+                res = {"ok": False, "error": str(e)}
+            reply = res.get("reply") or {}
+            if res.get("ok") and "run" in (reply.get("capabilities") or []):
+                live["host_available"] = True
+                add_note(f"Host helper connected (runs as {reply.get('user')}); host_exec is available.", "auto")
+            audit.write({"at": _now_iso(), "type": "host_probe", "ok": bool(live["host_available"]),
+                         "error": None if live["host_available"] else res.get("error")})
+
         async def run_segment(messages: List[dict]) -> dict:
             """One agent-loop call. Returns how it ended:
             {"end": "done"|"blocked"|"question"|"approval"|"rounds"|"budget",
@@ -917,8 +1008,9 @@ class CreatorManager:
                 disabled_tools=disabled_tools,
                 workload="background",
                 protected_action_check=live["protected_check"],
-                relevant_tools=set(CREATOR_CORE_TOOLS) | live["loaded_tools"],
-                forced_tools=set(CREATOR_CORE_TOOLS) | live["loaded_tools"],
+                caller_approved_check=lambda t, c: t == HOST_EXEC_TOOL and live["host_all_approved"],
+                relevant_tools=job_tools(),
+                forced_tools=job_tools(),
                 # Known secret values are blanked from tool results before the
                 # agent reads them (get_secret's own result excepted).
                 output_redactor=redactor.known_obj,
@@ -995,13 +1087,18 @@ class CreatorManager:
                         action = ask.get("action") or {}
                         tool = action.get("tool") or data.get("tool") or ""
                         content = action.get("content") or ""
-                        protected = bool(live["protected_check"] and live["protected_check"](tool, content))
+                        protected = bool(live["path_check"] and live["path_check"](tool, content))
+                        # What "approve for this job" would lift: nothing for a
+                        # protected path (one action at a time), the host-command
+                        # gate for host_exec, else the untrusted-content gate.
+                        scope = ("protected" if protected
+                                 else "host" if tool == HOST_EXEC_TOOL else "untrusted")
                         ending = {"end": "approval", "pause": {
                             "kind": "approval",
                             "question": ask.get("description") or "This action needs your OK.",
                             "action": {"tool": tool, "command": content},
                             "protected": protected,
-                            # A protected path is approved one action at a time.
+                            "scope": scope,
                             "choices": ["approve_once", "deny"] if protected else list(APPROVAL_DECISIONS),
                         }}
                     else:
@@ -1120,7 +1217,7 @@ class CreatorManager:
                           "user with ask_user only when blocked, and finish with the four-heading "
                           "report and a STATUS line."]
             msgs = [
-                {"role": "system", "content": CREATOR_SYSTEM_PROMPT},
+                {"role": "system", "content": system_prompt()},
                 {"role": "user", "content": task},
             ]
             if previous_text:
@@ -1129,8 +1226,9 @@ class CreatorManager:
             return msgs
 
         async def drive() -> None:
+            await probe_host()
             messages = [
-                {"role": "system", "content": CREATOR_SYSTEM_PROMPT},
+                {"role": "system", "content": system_prompt()},
                 {"role": "user", "content": task},
             ]
             while True:
@@ -1164,10 +1262,18 @@ class CreatorManager:
                                   "user if there is none.")
                     else:
                         result = await run_approved(action["tool"], action["command"])
+                        host_scope = request.get("scope") == "host"
                         if decision == "approve_job":
-                            live["gate_bypassed"] = True
-                        scope = ("for the rest of this job (untrusted-content approvals only)"
-                                 if decision == "approve_job" else "for this one action")
+                            if host_scope:
+                                live["host_all_approved"] = True
+                            else:
+                                live["gate_bypassed"] = True
+                        if decision != "approve_job":
+                            scope = "for this one action"
+                        elif host_scope:
+                            scope = "and all further host commands for the rest of this job"
+                        else:
+                            scope = "for the rest of this job (untrusted-content approvals only)"
                         reason = (f"The user APPROVED [{action['tool']}] `{_truncate(action['command'], 300)}` "
                                   f"{scope}. It has been run. Result (exit {result.get('exit_code')}):\n"
                                   f"{_tail(_tool_output_text(result), 3000)}")

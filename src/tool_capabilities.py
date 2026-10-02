@@ -202,6 +202,15 @@ _register(
     ToolEffect.READ_PRIVATE,
 )
 _register(
+    # Creator mode: a command on the HOST through the host helper, as its
+    # unprivileged `creator` user. Its output (pages, logs) is outside text.
+    {"host_exec"},
+    ToolEffect.EXECUTE_CODE,
+    ToolEffect.ADMIN_CHANGE,
+    ToolEffect.NETWORK_EGRESS,
+    result_integrity=ResultIntegrity.EXTERNAL_UNTRUSTED,
+)
+_register(
     {"download_attachment"},
     ToolEffect.READ_PRIVATE,
     ToolEffect.WRITE_WORKSPACE,
@@ -641,6 +650,11 @@ class ToolRunSecurityContext:
     # Returns a reason string when the action needs the user's OK, else None.
     # Checked before the bypasses below so no approval scope can lift it.
     protected_action_check: Optional[Callable[[Any, Any], Optional[str]]] = None
+    # Optional caller-supplied check (Creator mode's "allow all host commands
+    # for this job"). True means the caller's own approval already covers this
+    # action, so the untrusted-context gate doesn't ask again. Checked after
+    # protected_action_check, so it can never lift a protected path.
+    caller_approved_check: Optional[Callable[[Any, Any], bool]] = None
 
     def observe_messages(self, messages: Iterable[dict]) -> None:
         """Apply server-owned chat scope and promote untrusted prompt context."""
@@ -681,6 +695,8 @@ class ToolRunSecurityContext:
             reason = self.protected_action_check(tool_name, content)
             if reason:
                 return ToolGateDecision(False, reason)
+        if self.caller_approved_check is not None and self.caller_approved_check(tool_name, content):
+            return ToolGateDecision(True)
         if self.approval_gate_bypassed:
             return ToolGateDecision(True)
         if not self.external_untrusted_context_seen:

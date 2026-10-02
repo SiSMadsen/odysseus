@@ -211,8 +211,9 @@ def test_audit_log_and_events_are_redacted(session_factory, tmp_path):
 
     job = asyncio.run(run())
     entries = _audit_entries(tmp_path, job["id"])
-    assert [e["type"] for e in entries] == ["job_start", "tool_start", "tool_output", "job_end"]
-    assert entries[2]["exit_code"] == 0 and "HOME=/root" in entries[2]["output"]
+    assert [e["type"] for e in entries] == ["job_start", "host_probe", "tool_start", "tool_output", "job_end"]
+    assert entries[1]["ok"] is False   # no host helper in tests
+    assert entries[3]["exit_code"] == 0 and "HOME=/root" in entries[3]["output"]
     assert entries[-1]["status"] == "done"
 
     stored = json.dumps(entries) + json.dumps(job)

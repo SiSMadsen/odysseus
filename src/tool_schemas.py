@@ -1092,6 +1092,21 @@ FUNCTION_TOOL_SCHEMAS = [
     {
         "type": "function",
         "function": {
+            "name": "host_exec",
+            "description": "Creator mode only: run one shell command on the HOST machine (outside the Odysseus container) as the unprivileged user `creator`, in /srv/creator-helper/work. No stdin; each call is a fresh shell; background processes are stopped when it ends. Every call waits for the user's OK unless they allowed all host commands for this job. Returns output and exit code.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "command": {"type": "string", "description": "The shell command (run with bash -c)"},
+                    "timeout_s": {"type": "integer", "description": "Time limit in seconds (default 120, max 600)"},
+                },
+                "required": ["command"]
+            }
+        }
+    },
+    {
+        "type": "function",
+        "function": {
             "name": "resolve_contact",
             "description": "Look up a contact by name. Searches CardDAV address book and sent email history. Returns email addresses (when available) or phone numbers. Use when the user says 'message [name]', 'email [name]', or asks for someone's contact details.",
             "parameters": {

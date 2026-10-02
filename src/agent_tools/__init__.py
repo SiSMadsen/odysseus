@@ -110,6 +110,8 @@ TOOL_TAGS = {"bash", "python", "web_search", "web_fetch", "read_file", "write_fi
              "edit_image", "trigger_research", "manage_research",
              # Creator mode: secrets from the Secrets section (switch-checked).
              "get_secret",
+             # Creator mode: one command on the host via the host helper.
+             "host_exec",
              # Pull a tool the turn's selection missed into the tool list.
              "load_tools",
              # Generic loopback to any UI-button endpoint (cookbook,
