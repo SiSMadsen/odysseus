@@ -178,15 +178,27 @@ def test_hello_route_is_gated_and_reaches_the_helper(in_tmp, monkeypatch):
     assert out["ok"] is True and out["reply"]["capabilities"] == ["hello", "run"]
 
 
-def test_unit_file_keeps_the_helper_off_the_network_and_unprivileged():
+def test_unit_file_keeps_the_helper_unprivileged_and_narrow():
     unit = (_HELPER_PATH.parent / "creator-helper.service").read_text()
-    for line in ("User=creator", "PrivateNetwork=yes", "RestrictAddressFamilies=AF_UNIX",
-                 "NoNewPrivileges=yes", "CapabilityBoundingSet=", "ProtectSystem=strict",
-                 "ReadWritePaths=/srv/creator-helper", "--allow-uid 1000"):
+    for line in ("User=creator", "NoNewPrivileges=yes", "CapabilityBoundingSet=",
+                 "ProtectSystem=strict", "ProtectHome=yes", "RestrictSUIDSGID=yes",
+                 "ReadWritePaths=/srv/creator-helper /var/www/html", "--allow-uid 1000"):
         assert line in unit, line
+    # 6b decisions: network allowed for commands; no JIT-breaking MDWE.
+    assert "\nPrivateNetwork=yes" not in unit
+    assert "RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6 AF_NETLINK" in unit
+    assert "\nMemoryDenyWriteExecute=yes" not in unit
     overlay = (_HELPER_PATH.parent.parent / "docker" / "creator-helper.yml").read_text()
     assert "/srv/creator-helper:/app/host-helper:ro" in overlay
 
+
+def test_polkit_rule_covers_only_apache_and_not_stop():
+    rule = (_HELPER_PATH.parent / "50-creator-apache.rules").read_text()
+    assert 'subject.user != "creator"' in rule
+    assert 'action.lookup("unit") != "apache2.service"' in rule
+    assert '"reload"' in rule and '"restart"' in rule
+    for verb in ('"stop"', '"enable"', '"disable"', '"mask"', '"kill"'):
+        assert verb not in rule, verb
 
 
 # ---------------------------------------------------------------------------

@@ -1,7 +1,8 @@
-# Creator host helper (docs/creator-plan.md, Phase 6a: hello only).
-# Install: see host_helper/README.md. Kill switch: `sudo systemctl stop creator-helper`.
+# Creator host helper (docs/creator-plan.md, Phase 6).
+# Install: see host_helper/README.md. Kill switch: `sudo systemctl stop creator-helper`
+# (stops the helper and every command it started: they're in its cgroup).
 [Unit]
-Description=Odysseus Creator host helper (hello only)
+Description=Odysseus Creator host helper
 After=local-fs.target
 
 [Service]
@@ -15,15 +16,20 @@ LogsDirectoryMode=0700
 Restart=on-failure
 RestartSec=5
 
-# Hardening. 6a only answers hello, so it can be locked down hard. 6b (running
-# commands as `creator`) will need some of this loosened, deliberately.
+# Hardening. These apply to every command the helper runs, too.
+# - No sudo, no setuid: NoNewPrivileges, no capabilities, RestrictSUIDSGID.
+#   Restarting Apache goes through polkit instead (50-creator-apache.rules).
+# - Writable: only the helper's own folder and the web root. The rest of the
+#   system is read-only to it; /home (yours, with Odysseus's data/ and its
+#   keys) is invisible.
+# - Network: allowed for commands (decision 1, 2026-10-02), so it can check
+#   a page with curl. The helper itself listens only on its Unix socket.
 NoNewPrivileges=yes
-PrivateNetwork=yes
-RestrictAddressFamilies=AF_UNIX
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6 AF_NETLINK
 CapabilityBoundingSet=
 AmbientCapabilities=
 ProtectSystem=strict
-ReadWritePaths=/srv/creator-helper
+ReadWritePaths=/srv/creator-helper /var/www/html
 ProtectHome=yes
 PrivateTmp=yes
 PrivateDevices=yes
@@ -37,7 +43,8 @@ RestrictNamespaces=yes
 RestrictRealtime=yes
 RestrictSUIDSGID=yes
 LockPersonality=yes
-MemoryDenyWriteExecute=yes
+# Not MemoryDenyWriteExecute: commands inherit it, and it breaks anything
+# with a JIT (node, java, some PHP setups).
 SystemCallArchitectures=native
 UMask=0077
 

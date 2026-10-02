@@ -1,0 +1,18 @@
+// Creator host helper (docs/creator-plan.md, Phase 6b).
+// Lets the helper's user `creator` start, reload and restart Apache, and
+// nothing else: no other unit, and not stop/enable/disable/mask.
+// Install: sudo install -o root -g root -m 0644 host_helper/50-creator-apache.rules /etc/polkit-1/rules.d/
+polkit.addRule(function(action, subject) {
+    if (action.id != "org.freedesktop.systemd1.manage-units" || subject.user != "creator") {
+        return polkit.Result.NOT_HANDLED;
+    }
+    if (action.lookup("unit") != "apache2.service") {
+        return polkit.Result.NOT_HANDLED;
+    }
+    var verb = action.lookup("verb");
+    var allowed = ["start", "reload", "restart", "try-restart", "reload-or-restart", "reload-or-try-restart"];
+    if (allowed.indexOf(verb) >= 0) {
+        return polkit.Result.YES;
+    }
+    return polkit.Result.NOT_HANDLED;
+});
