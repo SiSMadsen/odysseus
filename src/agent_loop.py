@@ -3459,6 +3459,7 @@ async def stream_agent_loop(
     untrusted_gate_bypassed: bool = False,
     caller_approved_check=None,
     teacher_escalation: bool = True,
+    stop_on_missing_workspace: bool = True,
 ) -> AsyncGenerator[str, None]:
     """Streaming agent loop generator.
 
@@ -3571,7 +3572,9 @@ async def stream_agent_loop(
     # Tool retrieval uses the latest message by default. It may inherit recent
     # user turns only for explicit continuations ("yes", "do it", "1").
     _retrieval_query = str(_intent.get("retrieval_query") or _last_user)
-    if _explicitly_references_missing_workspace(_retrieval_query, workspace):
+    # Callers with no chat workspace by design (Creator mode) turn this off:
+    # for them "the workspace" is a folder to find, not a chat setting to pick.
+    if stop_on_missing_workspace and _explicitly_references_missing_workspace(_retrieval_query, workspace):
         msg = (
             "No active workspace is set. Use `/workspace pick` or "
             "`/workspace set /absolute/path`, then rerun the request."

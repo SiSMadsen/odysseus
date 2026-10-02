@@ -1035,6 +1035,10 @@ class CreatorManager:
                 # without this job's protected paths, scrubbing, failure rule
                 # and host gate (found in the first host run, 2026-10-02).
                 teacher_escalation=False,
+                # A task that says "in the workspace" must not end at chat's
+                # "No active workspace is set" reply (Phase 8 test 3, job
+                # cr-42c6fd9b6a56: finished in 12 ms, no model call).
+                stop_on_missing_workspace=False,
                 relevant_tools=job_tools(),
                 forced_tools=job_tools(),
                 # Known secret values are blanked from tool results before the

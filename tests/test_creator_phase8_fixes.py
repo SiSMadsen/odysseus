@@ -3,6 +3,8 @@
 import asyncio
 import json
 
+import pytest
+
 from src.creator_mode import CreatorManager
 from src.creator_secrets import do_get_secret
 # Shared fakes and fixtures (the autouse `isolated` fixture applies here too).
@@ -64,3 +66,46 @@ def test_other_approved_actions_still_hide_secrets_from_the_model(session_factor
     told = calls[1]["messages"][-1]["content"]
     assert SECRET not in told and "token=[REDACTED]" in told
     assert SECRET not in stored
+
+
+def test_creator_turns_the_missing_workspace_stop_off(session_factory):
+    calls = []
+
+    async def run():
+        mgr = CreatorManager(session_factory=session_factory, agent_loop=scripted([], calls))
+        job_id = mgr.start_job("create that file in the workspace", "u", "m")
+        await _wait_finished(mgr, job_id)
+
+    asyncio.run(run())
+    assert calls[0]["stop_on_missing_workspace"] is False
+
+
+
+@pytest.mark.parametrize("flag,expect_canned", [(None, True), (False, False)])
+def test_real_loop_missing_workspace_stop_can_be_turned_off(monkeypatch, flag, expect_canned):
+    """Phase 8 test 3 (job cr-42c6fd9b6a56): "…create that file in the
+    workspace" ended at chat's canned reply, with no model call."""
+    import src.agent_loop as agent_loop
+    monkeypatch.setattr(agent_loop, "get_setting", lambda key, default=None: default, raising=False)
+    monkeypatch.setattr(agent_loop, "get_mcp_manager", lambda: None, raising=False)
+    monkeypatch.setattr(agent_loop, "estimate_tokens", lambda *a, **k: 10)
+    monkeypatch.setattr(agent_loop, "blocked_tools_for_owner", lambda owner: set(), raising=False)
+    model_calls = []
+
+    async def fake_stream(*args, **kwargs):
+        model_calls.append(1)
+        yield f"data: {json.dumps({'delta': 'Which file name should I use?'})}\n\n"
+        yield "data: [DONE]\n\n"
+
+    monkeypatch.setattr(agent_loop, "stream_llm_with_fallback", fake_stream)
+    kwargs = {} if flag is None else {"stop_on_missing_workspace": flag}
+
+    async def collect():
+        return [c async for c in agent_loop.stream_agent_loop(
+            "http://local.test/v1", "m",
+            [{"role": "user", "content": "Ask me which file name to use, then create that file in the workspace."}],
+            max_rounds=1, relevant_tools={"bash"}, forced_tools={"bash"}, teacher_escalation=False, **kwargs)]
+
+    text = "".join(asyncio.run(collect()))
+    assert ("No active workspace is set" in text) is expect_canned
+    assert bool(model_calls) is (not expect_canned)
