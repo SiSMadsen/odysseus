@@ -2084,6 +2084,17 @@
               <button type="button" class="admin-btn-add" id="helper-test-btn">Test connection</button>
             </div>
           </div>
+          <div class="admin-card admin-only" id="creator-limits-card">
+            <h2>Creator limits</h2>
+            <div class="admin-toggle-sub" style="margin-bottom:8px">Protected paths: a Creator job asks before each action that names one (one path per line; Odysseus's own key and database are always protected). Time limit: the default for new jobs, 1–1440 minutes.</div>
+            <textarea id="creator-protected-paths" rows="3" spellcheck="false" placeholder="/etc&#10;/var/backups" style="width:100%;box-sizing:border-box;font-family:monospace;font-size:12px;"></textarea>
+            <div class="settings-row" style="margin-top:6px;align-items:center;gap:8px;">
+              <label for="creator-max-minutes-setting" style="font-size:12px;">Default time limit (minutes)</label>
+              <input type="number" id="creator-max-minutes-setting" min="1" max="1440" step="1" style="width:80px;">
+              <span id="creator-limits-msg" style="font-size:11px;margin-right:auto;"></span>
+              <button type="button" class="admin-btn-add" id="creator-limits-save">Save</button>
+            </div>
+          </div>
         </div>
 
         <!-- ═══ EMAIL TAB ═══ -->

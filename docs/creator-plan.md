@@ -261,9 +261,9 @@ Not needed for Creator to work; worth doing once the phases are finished.
 - [x] In the report's command list, host commands that ran under "Allow all host commands" are marked "(allowed: all host commands)".
 - [x] **Decided (2026-10-02): Creator jobs may schedule tasks** (`manage_tasks` via `load_tools`). A scheduled task runs later as an ordinary agent run, outside the job's hooks: it has no host access and no secrets (`host_exec` and `get_secret` only work inside the running job), and since Phase 5a its commands run as the tool user. No code change: this is how it already works.
 - [ ] The helper's work folder (`/srv/creator-helper/work`) keeps whatever jobs leave there (backups, say). Show its size in Settings > Host helper, or clean it up after a while.
-- [ ] A Settings field for Creator's protected paths and default time limit (`creator_protected_paths`, `creator_max_minutes`). Today they're only settable through `/api/auth/settings`.
+- [x] A Settings field for Creator's protected paths and default time limit: Settings > Secrets > **Creator limits** (admins only; saved through `/api/auth/settings`, which already validates both).
 - [ ] Put the window's jsdom tests in the repo (they were in a scratch folder that has since been wiped), so the live view and reply bar are tested on every run, not only their helper functions.
-- [ ] The first command of every job pauses at the untrusted-content gate, because skills, memories and integration descriptions in the prompt count as untrusted. Fine as is (see the safety-lock decision), but worth a line in the window explaining why the very first action asks.
+- [x] The window explains, on untrusted-content approvals, why even a job's first action asks (skills, memories and integration descriptions in its instructions count as outside content) and how to avoid repeats.
 
 ## Phase 8: Testing — DONE
 Most of these are already covered by unit tests with a fake model. What's left is doing each once for real, through the Creator window, against a real model in the container. Rebuild, then reload the page twice (or Ctrl+Shift+R): the service worker serves the cached page first.

@@ -200,6 +200,53 @@ async function testHelper() {
   }
 }
 
+// Creator limits (Polishing): protected paths and the default time limit,
+// saved through the admin settings route. The card is admin-only; the server
+// checks that too.
+function setLimitsMessage(text, isError) {
+  const msg = byId('creator-limits-msg');
+  if (!msg) return;
+  msg.textContent = text || '';
+  msg.className = text ? (isError ? 'admin-error' : 'admin-success') : '';
+}
+
+async function loadLimits() {
+  const paths = byId('creator-protected-paths');
+  const minutes = byId('creator-max-minutes-setting');
+  if (!paths || !minutes || !window._isAdmin) return;
+  try {
+    const s = await api('/api/auth/settings');
+    paths.value = (Array.isArray(s.creator_protected_paths) ? s.creator_protected_paths : []).join('\n');
+    minutes.value = s.creator_max_minutes || 60;
+    setLimitsMessage('');
+  } catch (e) {
+    setLimitsMessage(e.message, true);
+  }
+}
+
+async function saveLimits() {
+  const paths = (byId('creator-protected-paths')?.value || '')
+    .split('\n').map(p => p.trim()).filter(Boolean);
+  const raw = (byId('creator-max-minutes-setting')?.value || '').trim();
+  const minutes = parseInt(raw, 10);
+  if (!Number.isFinite(minutes) || minutes < 1 || minutes > 1440) {
+    setLimitsMessage('Time limit must be 1–1440 minutes.', true);
+    return;
+  }
+  try {
+    const saved = await api('/api/auth/settings', {
+      method: 'POST',
+      body: JSON.stringify({ creator_protected_paths: paths, creator_max_minutes: minutes }),
+    });
+    try { (await import('./appConfig.js')).invalidateSettings(); } catch (_) { /* cache is optional */ }
+    byId('creator-protected-paths').value = (saved.creator_protected_paths || []).join('\n');
+    byId('creator-max-minutes-setting').value = saved.creator_max_minutes;
+    setLimitsMessage('Saved. New jobs use these.');
+  } catch (e) {
+    setLimitsMessage(e.message, true);
+  }
+}
+
 let _bound = false;
 function init() {
   if (!_bound) {
@@ -207,11 +254,14 @@ function init() {
     if (add) add.addEventListener('click', () => openForm(null));
     const test = byId('helper-test-btn');
     if (test) test.addEventListener('click', testHelper);
+    const saveBtn = byId('creator-limits-save');
+    if (saveBtn) saveBtn.addEventListener('click', saveLimits);
     _bound = true;
   }
   setMessage('');
   closeForm();
   load();
+  loadLimits();
 }
 
 export default { init, load };

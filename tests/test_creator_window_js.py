@@ -272,3 +272,12 @@ def test_panel_only_uses_innerhtml_for_static_markup_and_the_report():
     assert "_downloadReportPdf(body.innerHTML, status, pdf)" in src
     # It downloads (the bundled html2pdf); no print dialog.
     assert "/static/lib/html2pdf.bundle.min.js" in src and ".print()" not in src
+
+
+def test_creator_limits_card_is_admin_only_and_wired():
+    index = (_STATIC / "index.html").read_text()
+    secrets = (_STATIC / "js" / "secrets.js").read_text()
+    assert 'class="admin-card admin-only" id="creator-limits-card"' in index
+    for el_id in ("creator-protected-paths", "creator-max-minutes-setting", "creator-limits-save"):
+        assert f'id="{el_id}"' in index and f"'{el_id}'" in secrets
+    assert "creator_protected_paths: paths, creator_max_minutes: minutes" in secrets
