@@ -33,6 +33,21 @@ def socket_path() -> str:
     return os.environ.get("CREATOR_HELPER_SOCKET") or DEFAULT_SOCKET
 
 
+def missing_socket_message(path: str) -> str:
+    """Why there's no socket, and the command that checks it. No folder means
+    the compose overlay isn't mounting it; a folder without the socket means
+    the helper isn't running on the host."""
+    folder = os.path.dirname(path) or "."
+    if not os.path.isdir(folder):
+        return (f"The helper's folder isn't mounted into the container ({folder} doesn't exist), "
+                "so docker/creator-helper.yml isn't enabled. On the host, in the odysseus folder, "
+                "`docker compose config | grep host-helper` should print \"target: /app/host-helper\"; if it prints "
+                "nothing, add COMPOSE_FILE=docker-compose.yml:docker/creator-helper.yml to .env and "
+                "rebuild (sudo docker compose up -d --build).")
+    return (f"The helper's folder is mounted, but there's no socket in it ({path}). Is the helper "
+            "running on the host? Check with: systemctl status creator-helper")
+
+
 async def request(payload: dict, path: Optional[str] = None, timeout: float = _TIMEOUT_S,
                   reply_timeout: Optional[float] = None) -> dict:
     """Send one request, return the helper's one-line JSON reply. `timeout`
@@ -40,9 +55,7 @@ async def request(payload: dict, path: Optional[str] = None, timeout: float = _T
     for the answer. Cancelling this coroutine closes the connection."""
     path = path or socket_path()
     if not os.path.exists(path):
-        raise HelperError(
-            f"No helper socket at {path}. Is the helper installed and running "
-            "(systemctl status creator-helper), and is docker/creator-helper.yml enabled?")
+        raise HelperError(missing_socket_message(path))
     try:
         reader, writer = await asyncio.wait_for(
             asyncio.open_unix_connection(path, limit=_MAX_REPLY_BYTES + 1), timeout=timeout)

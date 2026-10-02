@@ -138,8 +138,15 @@ def test_stale_socket_is_replaced(in_tmp):
 
 
 def test_client_explains_a_missing_socket(in_tmp):
+    # Folder there, socket missing: the helper isn't running.
     out = asyncio.run(client.hello(path="nope.sock"))
     assert out["ok"] is False and "systemctl status creator-helper" in out["error"]
+    assert "isn't mounted" not in out["error"]
+    # No folder: the compose overlay isn't mounting it.
+    out = asyncio.run(client.hello(path="missing-dir/helper.sock"))
+    assert "isn't mounted" in out["error"]
+    assert "docker compose config | grep host-helper" in out["error"]
+    assert "COMPOSE_FILE=docker-compose.yml:docker/creator-helper.yml" in out["error"]
 
 
 def test_client_default_path_and_env_override(monkeypatch):

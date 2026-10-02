@@ -84,6 +84,28 @@ connection: who connected (pid/uid), what they asked, the full command with
 secrets blanked, exit code, time, output sizes and the first 2,000 characters
 of output.
 
+## If Test connection fails
+
+Run these on the host, in the `odysseus` folder:
+
+```sh
+# 1. Is the overlay enabled? This should print a line from .env:
+grep '^COMPOSE_FILE' .env
+#    and this should print `target: /app/host-helper`:
+docker compose config | grep host-helper
+#    Nothing? Add the line, then rebuild:
+#    echo 'COMPOSE_FILE=docker-compose.yml:docker/creator-helper.yml' >> .env
+
+# 2. Did the running container get it? This should list helper.sock:
+sudo docker compose exec odysseus ls -l /app/host-helper/
+
+# 3. Is the helper running on the host?
+systemctl status creator-helper
+```
+
+Test connection's message says which of these failed: "isn't mounted" means
+step 1 or 2 (enable the overlay and rebuild), "no socket in it" means step 3.
+
 ## What creator can do
 
 This is the real limit on what Creator can do on the host, so it's worth
