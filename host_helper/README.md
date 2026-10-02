@@ -134,6 +134,18 @@ stopped. Closing the connection (Creator's Stop) stops it too.
 In Creator, every host command waits for your OK: "Allow once", "Allow all
 host commands for this job", or "Deny". Protected paths still ask every time.
 
+## The work folder
+
+Commands run in `/srv/creator-helper/work`, and whatever jobs leave there
+stays (backups of files they edited, say). Settings > Secrets > Host helper >
+Test connection shows how much it holds. To clear it:
+
+```sh
+sudo -u creator find /srv/creator-helper/work -mindepth 1 -delete
+```
+
+(The helper itself has no request that deletes files; clearing it is yours.)
+
 ## Kill switch
 
 ```sh

@@ -173,6 +173,22 @@ async function load() {
   }
 }
 
+function formatBytes(n) {
+  if (!Number.isFinite(n)) return '?';
+  const units = ['B', 'KB', 'MB', 'GB', 'TB'];
+  let i = 0;
+  while (n >= 1024 && i < units.length - 1) { n /= 1024; i++; }
+  return `${i ? n.toFixed(1) : n} ${units[i]}`;
+}
+
+// The helper's work folder keeps what jobs leave there (backups, say).
+function workUsageText(r) {
+  const u = r && r.work_usage;
+  if (!u) return '';
+  const more = u.partial ? '+' : '';
+  return ` Work folder (${r.workdir || 'work'}): ${formatBytes(u.bytes)}${more} in ${u.files}${more} files.`;
+}
+
 // Host helper connection test (Phase 6a): the server sends the helper a
 // "hello" and reports what came back.
 async function testHelper() {
@@ -187,7 +203,8 @@ async function testHelper() {
     if (res.ok) {
       const r = res.reply || {};
       out.className = 'admin-success';
-      out.textContent = `Connected: ${r.helper || 'helper'} v${r.version} running as ${r.user} (uid ${r.uid}); can do: ${(r.capabilities || []).join(', ')}.`;
+      out.textContent = `Connected: ${r.helper || 'helper'} v${r.version} running as ${r.user} (uid ${r.uid}); can do: ${(r.capabilities || []).join(', ')}.`
+        + workUsageText(r);
     } else {
       out.className = 'admin-error';
       out.textContent = res.error || 'Not connected.';

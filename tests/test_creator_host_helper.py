@@ -94,6 +94,19 @@ def test_socket_mode_and_peer_check_decides(in_tmp):
     assert "request_type" not in conn   # refused before reading the request
 
 
+def test_hello_reports_the_work_folder_usage(in_tmp):
+    (in_tmp / "work").mkdir()
+    (in_tmp / "work" / "a.bak").write_bytes(b"x" * 1000)
+    (in_tmp / "work" / "sub").mkdir()
+    (in_tmp / "work" / "sub" / "b").write_bytes(b"y" * 24)
+    h = _helper(in_tmp)
+    reply = _run(h, lambda: client.hello(path=SOCK))["reply"]
+    assert reply["workdir"] == str(in_tmp / "work")
+    assert reply["work_usage"] == {"bytes": 1024, "files": 2, "partial": False}
+    capped = h.work_usage(max_entries=1)
+    assert capped["partial"] is True and capped["files"] == 1
+
+
 def test_unknown_request_types_are_refused(in_tmp):
     h = _helper(in_tmp)
     reply = _run(h, lambda: client.request({"type": "shell", "command": "id"}, path=SOCK))

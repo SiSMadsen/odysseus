@@ -166,6 +166,24 @@ class Helper:
 
     # -- hello ------------------------------------------------------------
 
+    def work_usage(self, max_entries: int = 200_000) -> dict:
+        """How much the work folder holds (bytes, files), for Settings. Stops
+        counting after `max_entries` so a huge folder can't stall the helper."""
+        total, files, partial = 0, 0, False
+        for root, dirs, names in os.walk(self.workdir):
+            for name in names:
+                files += 1
+                if files > max_entries:
+                    partial = True
+                    break
+                try:
+                    total += os.lstat(os.path.join(root, name)).st_size
+                except OSError:
+                    pass
+            if partial:
+                break
+        return {"bytes": total, "files": min(files, max_entries), "partial": partial}
+
     def hello(self) -> dict:
         return {
             "ok": True,
@@ -176,6 +194,8 @@ class Helper:
             "user": self.user,
             "uid": os.getuid(),
             "uptime_s": int(time.time() - self.started),
+            "workdir": self.workdir,
+            "work_usage": self.work_usage(),
         }
 
     # -- run --------------------------------------------------------------
