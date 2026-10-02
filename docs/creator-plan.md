@@ -1,6 +1,6 @@
 # Creator Mode: Programming Plan
 
-Status (2026-10-02, branch `creator-mode`): Phases 1–4, 6, 7 and 8 are done. **Next: decide on Phase 5 (root).** Polishing items are listed before Phase 8.
+Status (2026-10-02, branch `creator-mode`): Phases 1–4, 6, 7 and 8 are done. **Next: Phase 5 (root), redesigned; step 5a (separate user for the agent's tools) first.** Polishing items are listed before Phase 8.
 Items marked **[CHECK]** are things not yet looked at, so their size isn't known.
 
 ## Purpose, scope and safeguards (read this first)
@@ -117,17 +117,26 @@ Safety code lives in `src/creator_safety.py`; `src/creator_mode.py` uses it.
 - [ ] Optional "Creator may use this secret" flag, separate from "enabled". Not built: Creator is currently the only thing that can use a secret, so a second switch would do the same thing as the first. Worth adding once something else can request secrets.
 - Not covered: values the *model writes into its own commands* (e.g. `curl -H "token: …"`) reach the shell unredacted, which is the point. They're blanked in the stored event log and audit log, but the tmux pane's scrollback and any files the command writes are not scrubbed.
 
-## Phase 5: Root broker (the "run as root" idea)
-How it works: the agent never receives the root password. It calls `run_as_root(command)`. The server does the following:
-1. Checks that the root secret's switch is **on**. If it is off, the call fails.
-2. Asks the host helper (Phase 6) to run the command with `sudo`, and the password is fed in by the server side, never by the agent.
-3. Scrubs the output, logs the command, and returns the result.
+## Phase 5: Root access (redesigned 2026-10-02)
+**Why the original design was dropped.** It stored the root password as a Secret and had the server feed it to `sudo` through the helper. (1) It can't work: the helper runs with `NoNewPrivileges`, which blocks `sudo` (seen in the first host run). (2) The password wouldn't be safe: the agent's bash can read the app key and database (Phase 4 finding), so a stored root password could be taken, and that's root everywhere, for good. (3) The switch would live in Odysseus, the thing it has to protect against.
 
-- [ ] Tool `run_as_root(command, reason)` with the server-side check.
-- [ ] Password is passed in via stdin only. It never goes on a command line, into an environment variable, or into logs.
-- [ ] Every root command is written to the audit log with the reason the agent gave.
-- [ ] Optional: a block-list of obviously destructive patterns (for example, wiping the root of the disk). This is a safety net, not real protection, so don't rely on it alone.
-- [ ] Known limit: root access is root access. The agent can still do damage with a command that looks harmless. The real protections are the on/off switch, the time limit, the log and the stop button.
+**Decisions (2026-10-02):**
+1. **A second small host service runs as root** (the root helper), with its own socket and audit log. It never needs a password.
+2. **Root is switched on from the GUI**, with a button. Because anything the server can do the agent's bash can also do (same uid), the button asks for a **6-digit code from an authenticator app** (TOTP). The **root helper** checks it against a key in a root-only file on the host; Odysseus never holds the key, and a code it sees is useless after it's used. Root is on for a set time (e.g. 30 minutes) and switches itself off; **Revoke** needs no code and is instant. A terminal command does the same as a fallback.
+3. **Arbitrary root commands, with a watchdog that checks every command before it runs** (inside the root helper: after a root command runs, nothing on the machine can stop it, and root could stop a separate watchdog). Three tiers:
+   - **Automatic:** commands that parse exactly as an allowed form. To start: `apt-get update`, `apt-get upgrade`, `apt-get install <package names>` (no `.deb` files, no URLs, no `-o` options, which can run any command); `chmod` / `chown` / `setfacl` on paths inside `/var/www` and `/srv`, checked after resolving symlinks.
+   - **Approval:** everything else, one command at a time, never "allow all". Anything that doesn't parse as an automatic form lands here, which is what makes pattern matching safe to rely on (`base64 -d | sh` or a written-then-run script just asks).
+   - **Refused, and root switches off at once:** anything touching the root helper, its config, log or watchdog, `sudoers`, `shadow`/`passwd`, SSH keys or sshd's config, or the Creator services; also several refusals in a row.
+4. **A settings page for the watchdog** (the tiers, directories, time limits). Saving a change that **loosens** it needs an authenticator code, checked by the root helper, which then writes its own root-only config; tightening needs none. So the agent can't loosen its own limits.
+5. **Prerequisite: the agent's tools run as their own user in the container** (e.g. uid 1001). Otherwise, while root is on, the agent's bash could send the root helper commands as if you'd approved them: the helper can't tell the server (uid 1000) from bash (also 1000). With its own user the agent can't read the app key, the database or the server's memory, and the helpers' peer check refuses it. This also closes the Phase 4 secrets weakness, for chat as well as Creator.
+
+**Steps** (each talked through before code):
+- [ ] **5a. A separate user for the agent's tools.** Found so far: commands start in three places (the built-in MCP shell for `bash`/`python`, with tmux sessions; background jobs in `src/bg_jobs.py`; Cookbook's tmux sessions), all from `agent_cwd()`. The server runs unprivileged as uid 1000, so it can't start a process as another user by itself: it needs a small privileged launcher in the container (options: a `sudo` rule that lets uid 1000 run commands as the tool user and nothing else, or a tiny root launcher the entrypoint starts). File tools (`read_file`, `write_file`, …) run inside the server process, so they stay uid 1000 and need a deny list for the key and database files instead. The agent's working folders need to be shared with the tool user (a group). To decide: which launcher; which tools move; what happens to chat's existing tmux sessions.
+- [ ] **5b. The root helper and its switch.** Root systemd service, own socket (mounted read-only like the first), peer check (uid 1000 only, so the tool user is refused), TOTP set-up at install, time-limited window, Revoke, audit log. Odysseus: route + button + countdown in the Creator window.
+- [ ] **5c. The watchdog.** The three tiers in the root helper, the strict parsers for the automatic forms, the refused list, the switch-off rules, and the settings page (loosening needs a code).
+- [ ] **5d. Creator side.** A `run_as_root` tool (offered only while root is on), approval cards for root commands (once only), root commands marked in the timeline and report, and the helper's verdict (automatic / approved / refused) in the audit log.
+
+**Known limits (to keep in mind):** package install scripts and an Apache config both run as root, so "automatic" apt installs are root-equivalent and trust your configured, signed repositories. The protections are the code-guarded switch, the time limit, the watchdog's refused list, per-command approval for everything unusual, and the audit log, not a promise that root can't do damage.
 
 ## Phase 6: Reaching outside the container (host helper over a socket file)
 **6a (hello only) — BUILT, NOT INSTALLED** (2026-10-01, on branch `creator-phase6a`, built while you were away: review before merging). Nothing on the host has been changed; the install is yours, by hand, from `host_helper/README.md`.
@@ -302,7 +311,7 @@ Most of these are already covered by unit tests with a fake model. What's left i
 - [x] Creator mode needs this fixed, since a run can't stop to wait for a second message. Done with the above.
 
 ## Suggested build order
-Phase 0, then the "all tools in one turn" TODO (Creator depends on it), then Phases 3, 1, 2, 4, 7, 6, 5, 8. The safety net comes before anything powerful (7 moved ahead of 6 on 2026-10-01: see Phase 7).
+Phase 0, then the "all tools in one turn" TODO (Creator depends on it), then Phases 3, 1, 2, 4, 7, 6, 8, 5. The safety net comes before anything powerful (7 moved ahead of 6 on 2026-10-01: see Phase 7).
 
 ## Working on the fork
 - Do this on a new branch, for example `creator-mode`, branched from `dev`. Keep `anthropic-model-fix` as it is.
