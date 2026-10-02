@@ -1218,7 +1218,9 @@ class CreatorManager:
                 raise
             except Exception as e:
                 result = {"error": f"Approved action failed to run: {e}", "exit_code": 1}
-            result = redactor.known_obj(result if isinstance(result, dict) else {"output": str(result)})
+            raw = result if isinstance(result, dict) else {"output": str(result)}
+            # Everything stored gets the known secret values blanked.
+            result = redactor.known_obj(raw)
             record_command(tool, content, result, approved=True)
             out = _tool_output_text(result)
             add_event({"type": "tool_output", "tool": tool, "command": _truncate(content),
@@ -1226,11 +1228,17 @@ class CreatorManager:
             audit.write({"at": _now_iso(), "type": "tool_output", "tool": tool, "command": content,
                          "exit_code": result.get("exit_code"), "approved": True,
                          "output": _truncate(out, _AUDIT_OUTPUT_CHARS)})
-            return result
+            # What the model reads: blanked too, except get_secret's own result,
+            # as in the agent loop (handing the value over is its job). Without
+            # this, an approved get_secret gave the model "[REDACTED]" (Phase 8
+            # test 5, job cr-3e30e949a8e2).
+            return raw if tool == "get_secret" else result
 
-        def continuation(reason: str, previous_text: str) -> List[dict]:
+        def continuation(reason: str, previous_text: str, handed_over: str = "") -> List[dict]:
             """A fresh context for the next segment: the task, the last thing
-            the agent said, and its notes, command log and failures."""
+            the agent said, and its notes, command log and failures. All of it
+            has known secret values blanked, except `handed_over`: the value an
+            approved get_secret returned, which the agent asked for."""
             notes = live["notes"][-25:]
             cmds = live["commands"][-25:]
             lines = [f"[Creator mode — continuing the same task] {reason}", ""]
@@ -1254,7 +1262,11 @@ class CreatorManager:
             ]
             if previous_text:
                 msgs.append({"role": "assistant", "content": redactor.known_text(_tail(previous_text, 4000))})
-            msgs.append({"role": "user", "content": redactor.known_text("\n".join(lines))})
+            content = redactor.known_text("\n".join(lines))
+            if handed_over:
+                content += ("\n\nThe value get_secret returned (use it where it's needed; never print it "
+                            f"or write it into notes, files or the report):\n{handed_over}")
+            msgs.append({"role": "user", "content": content})
             return msgs
 
         async def drive() -> None:
@@ -1285,6 +1297,7 @@ class CreatorManager:
                 request = seg["pause"]
                 payload = await pause(request)
                 answer = payload.get("answer") or ""
+                handed_over = ""
                 if request["kind"] == "approval":
                     action = request["action"]
                     decision = payload["decision"]
@@ -1306,16 +1319,22 @@ class CreatorManager:
                             scope = "and all further host commands for the rest of this job"
                         else:
                             scope = "for the rest of this job (untrusted-content approvals only)"
+                        if action["tool"] == "get_secret" and result.get("exit_code") == 0:
+                            # The value goes in after the message is scrubbed.
+                            handed_over = _tool_output_text(result)
+                            shown = "(the value is at the end of this message)"
+                        else:
+                            shown = _tail(_tool_output_text(result), 3000)
                         reason = (f"The user APPROVED [{action['tool']}] `{_truncate(action['command'], 300)}` "
                                   f"{scope}. It has been run. Result (exit {result.get('exit_code')}):\n"
-                                  f"{_tail(_tool_output_text(result), 3000)}")
+                                  f"{shown}")
                     if answer:
                         reason += f"\nThe user also said: {answer}"
                 else:
                     reason = (f"You were blocked and asked: {request.get('question')}\n"
                               + (f"The user answered: {answer}" if answer else
                                  "The user resumed without an answer; carry on as best you can."))
-                messages = continuation(reason, seg.get("text") or "")
+                messages = continuation(reason, seg.get("text") or "", handed_over)
 
         try:
             await asyncio.wait_for(drive(), timeout=max_minutes * _SECONDS_PER_MINUTE)
