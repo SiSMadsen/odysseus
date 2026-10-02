@@ -226,6 +226,13 @@ const CHOICE_HINTS = {
   deny: "Don't run it. Creator is told to find another way.",
 };
 
+// Why a job's first action usually asks (Polishing): skills, memories and
+// integration descriptions in the prompt count as outside content.
+export const UNTRUSTED_NOTICE = 'Asked because outside content can steer what Creator does: even the first '
+  + 'action asks, since skills, memories and integration descriptions in its instructions count as outside '
+  + 'content. "Approve for this job" covers the rest of these, or tick "Approve untrusted actions up front" '
+  + 'when starting a job.';
+
 // A host command (Phase 6b: pause.scope === 'host'): "for this job" lifts the
 // host-command gate, not the untrusted-content one.
 const HOST_CHOICE_LABELS = {
@@ -265,7 +272,9 @@ export function replyControls(pause) {
         ? 'This touches a protected path, so it can only be approved one action at a time.'
         : pause.scope === 'host'
           ? 'This command runs on the host machine, outside the container, as the user creator.'
-          : '',
+          : pause.scope === 'untrusted'
+            ? UNTRUSTED_NOTICE
+            : '',
     };
   }
   const options = (Array.isArray(pause.options) ? pause.options : [])

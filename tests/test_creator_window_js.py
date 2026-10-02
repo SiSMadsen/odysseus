@@ -211,6 +211,21 @@ def test_host_commands_read_plainly_and_say_where_they_run():
 
 
 @needs_node
+def test_untrusted_approvals_explain_why_they_ask():
+    out = _run(textwrap.dedent(f"""
+        const v = await import('{_VIEW}');
+        console.log(JSON.stringify([
+          v.replyControls({{kind: 'approval', scope: 'untrusted', choices: ['approve_once', 'approve_job', 'deny']}}).notice,
+          v.replyControls({{kind: 'approval', scope: 'protected', protected: true, choices: ['approve_once', 'deny']}}).notice,
+          v.replyControls({{kind: 'approval', choices: ['approve_once', 'deny']}}).notice,
+        ]));
+    """))
+    assert "first action asks" in out[0] and "Approve untrusted actions up front" in out[0]
+    assert "protected path" in out[1]
+    assert out[2] == ""
+
+
+@needs_node
 def test_report_filename():
     out = _run(textwrap.dedent(f"""
         const v = await import('{_VIEW}');
