@@ -186,16 +186,43 @@ def test_background_jobs_run_through_the_wrapper(fake_sudo, tmp_path, monkeypatc
     assert script.startswith("sudo -n -u ") and " < " in script
 
 
-def test_sharing_a_workspace(fake_sudo, monkeypatch, tmp_path):
+def test_sharing_a_workspace_never_opens_the_data_folder(fake_sudo, monkeypatch, tmp_path):
+    """A workspace can contain the data folder (e.g. the app folder): sharing
+    it must not give the tool group the app's key, database or settings."""
+    import grp
     import subprocess
-    ran, started = [], []
-    monkeypatch.setattr(subprocess, "run", lambda argv, **kw: ran.append(argv))
-    monkeypatch.setattr(subprocess, "Popen", lambda argv, **kw: started.append(argv))
+    from src import constants
+    group = grp.getgrgid(os.getgid()).gr_name   # stands in for odyshare here
+    monkeypatch.setenv("ODYSSEUS_TOOL_GROUP", group)
     monkeypatch.setattr(tool_user, "_shared_paths", set())
-    tool_user.share_with_tools(str(tmp_path))
-    tool_user.share_with_tools(str(tmp_path))   # once per folder
-    assert ran == [["setfacl", "-m", "g:odyshare:rwX", "-m", "d:g:odyshare:rwX", str(tmp_path)]]
-    assert started == [["setfacl", "-R", "-m", "g:odyshare:rwX", "-m", "d:g:odyshare:rwX", str(tmp_path)]]
+    ws = tmp_path / "app"
+    (ws / "src").mkdir(parents=True)
+    (ws / "src" / "main.py").write_text("x")
+    (ws / "data").mkdir()
+    (ws / "data" / ".app_key").write_text("k")
+    monkeypatch.setattr(constants, "DATA_DIR", str(ws / "data"))
+
+    tool_user.share_with_tools(str(ws))
+
+    def acl(path):
+        return subprocess.run(["getfacl", "-cp", str(path)], capture_output=True, text=True).stdout
+
+    for _ in range(100):   # the recursive part runs in the background
+        if f"group:{group}:rw" in acl(ws / "src" / "main.py"):
+            break
+        time.sleep(0.05)
+    assert f"group:{group}:rwx" in acl(ws)
+    assert f"group:{group}:rw" in acl(ws / "src" / "main.py")
+    assert f"group:{group}:" not in acl(ws / "data")
+    assert f"group:{group}:" not in acl(ws / "data" / ".app_key")
+
+    # Anything inside the data folder is never shared at all.
+    ran = []
+    monkeypatch.setattr(subprocess, "run", lambda argv, **kw: ran.append(argv))
+    monkeypatch.setattr(subprocess, "Popen", lambda argv, **kw: ran.append(argv))
+    tool_user.share_with_tools(str(ws / "data"))
+    tool_user.share_with_tools(str(ws / "data" / "uploads"))
+    assert ran == []
 
 
 def test_entrypoint_sets_up_the_tool_user_safely():
@@ -209,3 +236,24 @@ def test_entrypoint_sets_up_the_tool_user_safely():
     assert "chmod o-rwx" in ep and "chmod 2770" in ep and "umask 027" in ep
     dockerfile = (Path(__file__).resolve().parent.parent / "Dockerfile").read_text()
     assert "    sudo \\" in dockerfile and "    acl \\" in dockerfile
+
+
+@pytest.mark.parametrize("name", [".app_key", "app.db", "app.db-wal", "auth.json", "settings.json",
+                                  "sessions.json", "memory.json", "creator/audit/cr-x.jsonl",
+                                  "creator/secret_access.jsonl", "ssh/id_ed25519", "bg_jobs.json"])
+def test_file_tools_refuse_the_apps_secret_files(name):
+    """Phase 5a step 3: file tools run inside the server (not as the tool
+    user), so they rely on their own deny rules, also through a workspace
+    that contains the data folder."""
+    from src import tool_execution as te
+    from src.constants import DATA_DIR
+    with pytest.raises(ValueError):
+        te._resolve_tool_path(os.path.join(DATA_DIR, name))
+    token = te._active_workspace.set(os.path.dirname(DATA_DIR))
+    try:
+        with pytest.raises(ValueError):
+            te._resolve_tool_path(os.path.join(DATA_DIR, name))
+    finally:
+        te._active_workspace.reset(token)
+    # The agent's own work folder stays open.
+    assert te._resolve_tool_path(os.path.join(DATA_DIR, "agent_workspace", "notes.txt"))

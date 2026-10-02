@@ -154,15 +154,24 @@ def share_with_tools(path: str) -> None:
     if not tool_user() or not group or not path or path in _shared_paths:
         return
     _shared_paths.add(path)
+    from src.constants import DATA_DIR
+    real, data = os.path.realpath(path), os.path.realpath(DATA_DIR)
+    if real == data or real.startswith(data + os.sep):
+        # Never open up the app's data folder (key, database, settings). The
+        # agent's own work folder in it is already shared by the entrypoint.
+        return
     acl = ["-m", f"g:{group}:rwX", "-m", f"d:g:{group}:rwX"]
     try:
         # The folder itself now (instant), so the first command can start
         # there; everything inside in the background, without blocking the
-        # server on a big tree.
-        subprocess.run(["setfacl", *acl, path], stdout=subprocess.DEVNULL,
+        # server on a big tree, and never descending into the data folder
+        # (a workspace like the app folder contains it).
+        subprocess.run(["setfacl", *acl, real], stdout=subprocess.DEVNULL,
                        stderr=subprocess.DEVNULL, timeout=10)
-        subprocess.Popen(["setfacl", "-R", *acl, path], stdout=subprocess.DEVNULL,
-                         stderr=subprocess.DEVNULL, stdin=subprocess.DEVNULL, start_new_session=True)
+        subprocess.Popen(["find", real, "-xdev", "(", "-path", data, "-prune", ")", "-o",
+                          "-exec", "setfacl", *acl, "{}", "+"],
+                         stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+                         stdin=subprocess.DEVNULL, start_new_session=True)
     except (OSError, subprocess.SubprocessError):
         pass
 
