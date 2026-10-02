@@ -153,6 +153,42 @@ How it works: the agent never receives the root password. It calls `run_as_root(
   - **The socket can't live in `data/`.** On every start, `docker/entrypoint.sh` (`repair_tree_ownership`) changes the owner of everything under `/app/data` to the container user (PUID, 1000). A `creator`-owned socket folder there would be taken over. Use a separate bind mount outside `data/`, e.g. host `/run/creator-helper`, which the entrypoint doesn't touch.
   - **The agent's bash can reach the socket directly.** The Odysseus server and the agent's bash run as the same uid (1000) in the container, so `SO_PEERCRED` can't tell them apart, and bash could talk to the helper without going through `host_exec` (skipping its approvals, protected paths and the app's audit log). A token held by the server doesn't fix it: the host's `kernel.yama.ptrace_scope` is 0, so a same-uid process can read the server's memory. The helper's own limits (fixed request types, time and output limits, its own audit log, the kill switch) are the real boundary, the same "tripwire, not a wall" situation as Phase 4. Running the agent's bash as a separate uid would close it; not decided.
 
+### 6b design: running commands on the host (DRAFT, for review, 2026-10-02)
+Nothing here is built. It's the plan for review before any code, with the decisions marked **Decide**.
+
+**What the goal needs.** The "Purpose" section names three kinds of tasks: fix a web page, edit a config file, install a package. On this host that means Apache 2 serving `/var/www/html` (`index.html` owned by you; `images/` by root), its config in `/etc/apache2`, and Debian packages. PostgreSQL 15 and Docker also run here. Nothing needs them yet.
+
+**The boundary is what `creator` can do on the host.** The agent's bash in the container runs as the same uid as the Odysseus server, so it can talk to the socket directly and skip Odysseus's approval pause and Odysseus's own log (see the findings below). It can't get more than `host_exec` would: commands run as `creator`. So:
+- **What `creator` is allowed to do is the real limit**, set twice: by file permissions on the host, and by the systemd unit's `ReadWritePaths` (so a permission mistake elsewhere is still blocked). `ProtectHome=yes` stays, which keeps `/home/madsen` (including Odysseus's `data/`, with the app key and database) invisible to it.
+- **The helper's audit log is the record to trust**, because the agent can't reach it. Odysseus's log and its approval pauses are supervision on top: useful, not a wall.
+- Rejected: running the agent's bash as a separate uid. It would change the bash tool for all agent use (shared with upstream), and the gain is limited to the approval pause.
+
+**The `run` request.**
+- `{"type": "run", "command": "...", "timeout_s": 120}` → one reply when it ends: `exit_code`, `stdout`, `stderr` (each cut to 256 KB), `duration_s`, `timed_out`.
+- Run with `/bin/bash -c` as `creator`, in `/srv/creator-helper/work`, with a clean environment (fixed `PATH`, `HOME=/srv/creator-helper/home`, `LANG=C.UTF-8`, nothing inherited), `umask 022`, and stdin closed (no interactive prompts).
+- Its own process group. That group is killed when the command finishes (no daemons left behind), at the time limit (default 120 s, cap 600 s), or **when the connection closes**, so Creator's Stop (which cancels the request) also kills the host command. The kill switch (`systemctl stop`) kills everything in the service's cgroup.
+- One command at a time; a second gets "busy". Only uid 1000, as in 6a.
+- Helper audit log: the full command, exit code, duration, output sizes and the first 2 KB of output. **Decide:** commands are logged unredacted (a token the model puts in a command line would be in this log, which only root can read). Alternative: Odysseus sends the values to blank with each request.
+
+**In Odysseus.** A `host_exec(command, timeout_s)` tool, offered only in Creator runs (refused in chat, like `get_secret`), added to Creator's core tools when the helper answers `hello` at job start. It goes through the same checks as bash: protected paths, the untrusted-content gate, the three-failures rule, output scrubbing, the event log and audit log. The Creator window needs nothing new. The system prompt tells the model which tool reaches the host and which reaches the container.
+
+**The rights `creator` would get** (my recommendation):
+1. **Write `/var/www/html`** (the web page task): `setfacl -R -m u:creator:rwX` plus the same as default ACL, so new files stay writable, and add it to `ReadWritePaths`. Nothing else on disk.
+2. **Read Apache's logs** (`/var/log/apache2`, root:adm 0640) by an ACL on that folder only, not membership of `adm` (which would also open `auth.log` and the rest).
+3. **Reload/restart Apache** without sudo, through a polkit rule that allows `creator` to manage `apache2.service` and nothing else. This keeps `NoNewPrivileges=yes` (sudo would need it off for the whole service).
+4. **Network for host commands: Decide.** Needed for `curl http://localhost/` checks and any download. 6a has none at all (`PrivateNetwork=yes`). My recommendation: allow it for commands (the helper still listens on nothing but its socket), since checking the page after a fix is part of the job.
+
+**Deliberately not in 6b:**
+- **Editing Apache's config.** Write access to `/etc/apache2` plus the right to reload is **root-equivalent**: Apache reads its config as root, and a config line can start a program as root (piped logs) or write any file as root (log paths). So it belongs with Phase 5 and its switch, not hidden in 6b as "just a config folder".
+- **Installing packages.** `apt` runs package scripts as root, and `apt install ./file.deb` installs anything: root-equivalent too, so it's Phase 5.
+- PostgreSQL and Docker: not needed by any named task. Docker access is full root.
+
+So 6b on its own covers "fix a web page" end to end (edit, reload, check, read the logs). The other two named tasks need Phase 5. That's an honest result: they are root tasks.
+
+**Approvals for host commands: Decide.** (a) The same gates as container commands (after the first `approve_job`, host commands run without asking), or (b) **every `host_exec` asks** (`approve_once` only) for the first while, with a setting to relax it later. I recommend (b) to start: it costs a click per command and gives you a feel for what it does on the real machine.
+
+**Build order.** (1) `run` in the helper, with tests against a real temporary socket (exit codes, time limit, kill on disconnect, no leftover processes, output caps, busy). (2) `host_exec` in Odysseus, with tests. (3) An updated unit file and README with the rights steps above, which you apply by hand. (4) A live test: "change the title of the page in /var/www/html to X, reload Apache and check it with curl."
+
 ## Phase 7: UI (Creator window) — IN PROGRESS
 **Decision: Phase 7 before Phase 6.** Stop, pause/approve, the live log and the deadline exist on the server but are only usable with curl. Phase 6b gives the agent real host access, and watching a run (and stopping it) should be easy before then. Phase 8's stop and time-limit tests need the UI too.
 
