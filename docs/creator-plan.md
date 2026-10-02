@@ -253,6 +253,14 @@ Not needed for Creator to work; worth doing once the phases are finished.
 ## Phase 8: Testing
 Most of these are already covered by unit tests with a fake model. What's left is doing each once for real, through the Creator window, against a real model in the container. Rebuild, then reload the page twice (or Ctrl+Shift+R): the service worker serves the cached page first.
 
+**Run of 2026-10-02 (claude-sonnet-5-5), from the job log:**
+- Test 1 passed: `cr-383d951abcee` paused once for approval; `cr-97b62888989e` (approve untrusted up front) didn't pause. Both reports match their commands.
+- Test 2 passed, in its own way: `cr-c381409d9620` ran the command once, judged the name a deliberate placeholder and reported that instead of trying workarounds. Nothing was repeated.
+- Test 3 **found a bug**: `cr-42c6fd9b6a56` finished in 12 ms with chat's "No active workspace is set" reply and no model call, because the task mentions "the workspace". Fixed (`stop_on_missing_workspace`, commit `13b67780`); **re-run needed**.
+- Test 5 **found a bug** (approved `get_secret` gave the model `[REDACTED]`), fixed; the re-run `cr-7f1916a1b189` passed.
+- Tests 4, 6, 7 and 8: **no jobs in the log**, so not run yet (or not as Creator jobs). Test 9 (the window) can't be checked from the log.
+
+
 - [ ] **Harmless first task.** New job: "List the files in /app/data/agent_workspace and write a report." Expect: the live view shows the commands as they run, it pauses once at the untrusted-content check (Approve for this job), then it finishes with a report whose "Exact commands" match the timeline. Then once more with "Approve untrusted actions up front" ticked: no pause.
 - [ ] **Fails on purpose.** "Run the command `definitely-not-a-command --version` and tell me its version." Expect: different approaches in the timeline, never the same failing command 4 times (a "Refused from now on" line if it tries), and a report that lists the failures under "What didn't work". *(Automated: `test_same_command_failing_the_same_way_three_times_is_then_refused`, `test_three_failures_rule_in_the_real_agent_loop`.)*
 - [ ] **A question.** "Ask me which file name to use, then create that file in the workspace." Expect: the reply bar shows the question (and options, if any); your answer appears in the timeline and the job continues. Try "Carry on without an answer" once too.
