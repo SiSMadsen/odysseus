@@ -1,6 +1,6 @@
 # Creator Mode: Programming Plan
 
-Status (2026-10-02, branch `creator-mode`; Phases 6a and 6b built and live-tested on branch `creator-phase6a`): Phases 1, 2, 3 and 4 are built, tested, and smoke-tested against a real model in the Docker container. The "all tools in one turn" TODO is done. **Now: Phase 7 (the Creator window), before Phase 6.** Steps 7a–7d are done: history route, the window, live run with Stop, and answering pauses. Phases 5, 6 and 8 are not started.
+Status (2026-10-02, branch `creator-mode`): Phases 1–4, 6 (6a and 6b) and 7 are built, tested and live-tested; `creator-phase6a` is merged in. **Next: the Phase 8 checklist**, then decide on Phase 5 (root). Polishing items are listed before Phase 8.
 Items marked **[CHECK]** are things not yet looked at, so their size isn't known.
 
 ## Purpose, scope and safeguards (read this first)
