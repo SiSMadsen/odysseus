@@ -110,8 +110,16 @@ def launch(command: str, session_id: str, cwd: Optional[str] = None,
         cmd_path.write_text(command + "\n", encoding="utf-8")
         lp, xp, cp = (shlex.quote(git_bash_path(p)) for p in (log_path, exit_path, cmd_path))
         script_path = _JOBS_DIR / f"{job_id}.sh"
+        from src.tool_user import tool_user, wrap_shell
+        if tool_user():
+            # Phase 5a: the command runs as the tool user. It can't read the
+            # job files (data/ is closed to it), so this wrapper, running as
+            # the app, feeds the command on stdin and writes the output.
+            run_cmd = f"{wrap_shell(['/bin/bash', '-s'], {'HOME': cwd or ''} if cwd else None)} < {cp}"
+        else:
+            run_cmd = f"bash {cp}"
         script_path.write_text(
-            f"bash {cp} > {lp} 2>&1\n"
+            f"{run_cmd} > {lp} 2>&1\n"
             f"echo $? > {xp}\n",
             encoding="utf-8",
         )
@@ -231,7 +239,11 @@ def refresh() -> Dict[str, Dict[str, Any]]:
 
 
 def _kill(pid: Optional[int]) -> None:
-    # Cross-platform process-tree teardown (POSIX killpg / Windows taskkill /T).
+    # What runs as the tool user first (the app can't signal it: Phase 5a),
+    # then the cross-platform process-tree teardown (POSIX killpg / Windows
+    # taskkill /T).
+    from src.tool_user import kill_tool_tree
+    kill_tool_tree(pid)
     kill_process_tree(pid)
 
 

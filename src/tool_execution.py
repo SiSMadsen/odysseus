@@ -496,6 +496,10 @@ def agent_cwd() -> str:
     the active workspace when set, else the persistent data dir."""
     workspace = get_active_workspace()
     if workspace:
+        # Phase 5a: commands run as the tool user; let it into the workspace
+        # (once per folder; only folders the app owns can be shared).
+        from src.tool_user import share_with_tools
+        share_with_tools(workspace)
         return workspace
     resolved = os.path.realpath(_AGENT_WORKDIR)
     if resolved not in _agent_readable_data_subdirs():

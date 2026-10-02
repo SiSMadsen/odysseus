@@ -8,6 +8,7 @@ import collections
 from typing import Optional, Callable, Awaitable, Tuple, Dict
 from core.platform_compat import IS_WINDOWS, find_bash
 from src.constants import MAX_OUTPUT_CHARS
+from src.tool_user import kill_process, tool_user, wrap_argv
 
 DEFAULT_BASH_TIMEOUT = 60 * 60     # 1 hour
 DEFAULT_PYTHON_TIMEOUT = 60 * 60
@@ -35,6 +36,10 @@ async def _create_bash_subprocess(command: str, **kwargs):
                 "install Git for Windows and restart Odysseus"
             )
         return await asyncio.create_subprocess_exec(bash, "-c", command, **kwargs)
+    if tool_user():
+        # Phase 5a: as the tool user, with a clean environment.
+        env = kwargs.pop("env", None)
+        return await asyncio.create_subprocess_exec(*wrap_argv(["/bin/bash", "-c", command], env), **kwargs)
     return await asyncio.create_subprocess_shell(command, **kwargs)
 
 
@@ -87,17 +92,19 @@ async def _ensure_tmux_session(name: str, cwd: str, env: Optional[dict]) -> None
     if await _tmux_has_session(name):
         await _run_exec("tmux", "send-keys", "-t", name, "stty -echo", "C-m", timeout=5)
         return
-    await _run_exec(
-        "tmux", "new-session", "-d", "-s", name, "-c", cwd,
-        "env",
-        f"TERM={env.get('TERM', 'xterm-256color') if env else 'xterm-256color'}",
-        f"COLUMNS={env.get('COLUMNS', '120') if env else '120'}",
-        f"LINES={env.get('LINES', '40') if env else '40'}",
-        "/bin/bash",
-        "--noprofile",
-        "--norc",
-        timeout=10,
-    )
+    term_env = {
+        "TERM": env.get("TERM", "xterm-256color") if env else "xterm-256color",
+        "COLUMNS": env.get("COLUMNS", "120") if env else "120",
+        "LINES": env.get("LINES", "40") if env else "40",
+    }
+    if tool_user():
+        # Phase 5a: the session stays the app's (it drives and reads it); the
+        # shell inside runs as the tool user, with a clean environment.
+        home = {"HOME": env["HOME"]} if env and env.get("HOME") else {}
+        shell = wrap_argv(["/bin/bash", "--noprofile", "--norc"], {**term_env, **home})
+    else:
+        shell = ["env", *(f"{k}={v}" for k, v in term_env.items()), "/bin/bash", "--noprofile", "--norc"]
+    await _run_exec("tmux", "new-session", "-d", "-s", name, "-c", cwd, *shell, timeout=10)
     if not await _tmux_has_session(name):
         raise RuntimeError(f"failed to create tmux session {name}")
     await _run_exec("tmux", "send-keys", "-t", name, "stty -echo", "C-m", timeout=5)
@@ -253,7 +260,7 @@ async def _run_subprocess_streaming(
     except asyncio.TimeoutError:
         timed_out = True
         try:
-            proc.kill()
+            kill_process(proc)
         except Exception:
             pass
         try:
@@ -262,7 +269,7 @@ async def _run_subprocess_streaming(
             pass
     except asyncio.CancelledError:
         try:
-            proc.kill()
+            kill_process(proc)
         except Exception:
             pass
         try:
@@ -361,11 +368,12 @@ class PythonTool:
         from src.tool_execution import agent_cwd, _truncate
         progress_cb = ctx.get("progress_cb")
         _subproc_env = ctx.get("subproc_env")
+        argv = [(sys.executable or "python"), "-I", "-c", content]
         proc = await asyncio.create_subprocess_exec(
-            (sys.executable or "python"), "-I", "-c", content,
+            *wrap_argv(argv, _subproc_env),   # Phase 5a: as the tool user, when there is one
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.PIPE,
-            env=_subproc_env,
+            env=None if tool_user() else _subproc_env,
             cwd=agent_cwd(),
         )
         stdout, stderr, rc, timed_out = await _run_subprocess_streaming(

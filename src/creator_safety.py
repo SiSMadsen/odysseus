@@ -13,6 +13,7 @@ Creator mode safety net (Phase 3 of docs/creator-plan.md):
   after the session id, so stopping the job alone would leave a running
   command behind. Killing the session ends it.
 """
+import asyncio
 import json
 import logging
 import os
@@ -254,6 +255,16 @@ async def kill_job_shell(session_id: str) -> None:
         if not shutil.which("tmux"):
             return
         from src.agent_tools.subprocess_tools import _run_exec, _tmux_session_name
-        await _run_exec("tmux", "kill-session", "-t", _tmux_session_name(session_id), timeout=5)
+        from src.tool_user import kill_tool_tree, tool_user
+        name = _tmux_session_name(session_id)
+        if tool_user():
+            # Phase 5a: the shell runs as the tool user, which the app can't
+            # signal itself; kill everything under the pane through sudo
+            # first (closing the session alone leaves nohup'd jobs running).
+            out, _, rc = await _run_exec("tmux", "list-panes", "-t", name, "-F", "#{pane_pid}", timeout=5)
+            for line in (out.split() if rc == 0 else []):
+                if line.isdigit():
+                    await asyncio.to_thread(kill_tool_tree, int(line))
+        await _run_exec("tmux", "kill-session", "-t", name, timeout=5)
     except Exception:
         logger.debug("Creator: tmux cleanup failed for %s", session_id, exc_info=True)

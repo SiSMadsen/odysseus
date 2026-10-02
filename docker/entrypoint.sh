@@ -120,7 +120,7 @@ TOOL_USER="${ODYSSEUS_TOOL_USER:-odytools}"
 TOOL_UID="${ODYSSEUS_TOOL_UID:-1001}"
 TOOL_GROUP="${ODYSSEUS_TOOL_GROUP:-odyshare}"
 WORKSPACE_DIR=/app/data/agent_workspace
-unset ODYSSEUS_TOOL_USER
+unset ODYSSEUS_TOOL_USER ODYSSEUS_TOOL_GROUP
 if [ "${ODYSSEUS_TOOL_USER_ENABLED:-true}" = "true" ] && command -v sudo >/dev/null 2>&1; then
     if [ "$TOOL_UID" = "$PUID" ]; then
         echo "entrypoint: ODYSSEUS_TOOL_UID must differ from PUID ($PUID); tool user not set up" >&2
@@ -149,6 +149,7 @@ if [ "${ODYSSEUS_TOOL_USER_ENABLED:-true}" = "true" ] && command -v sudo >/dev/n
         if [ "$tool_ok" = true ] && visudo -cf "$SUDOERS.tmp" >/dev/null 2>&1; then
             mv "$SUDOERS.tmp" "$SUDOERS"
             export ODYSSEUS_TOOL_USER="$TOOL_USER"
+            export ODYSSEUS_TOOL_GROUP="$TOOL_GROUP"
         else
             rm -f "$SUDOERS.tmp" "$SUDOERS"
             echo "entrypoint: WARNING: setting up the tool user failed; the agent's tools run as $ODY_USER (the old way)" >&2
