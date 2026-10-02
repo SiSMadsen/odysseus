@@ -284,3 +284,12 @@ export function replyControls(pause) {
 export function sendLabel(text) {
   return String(text || '').trim() ? 'Send' : 'Carry on without an answer';
 }
+
+/** "creator-cr-1a2b3c4d5e6f-2026-10-02.md": job id plus the day it finished
+ *  (or started). The same stem names the printed PDF. */
+export function reportFilename(jobId, isoDate, ext = 'md', now = Date.now()) {
+  const t = Date.parse(isoDate || '');
+  const day = new Date(Number.isNaN(t) ? now : t).toISOString().slice(0, 10);
+  const id = String(jobId || 'job').replace(/[^A-Za-z0-9_-]/g, '');
+  return `creator-${id}-${day}${ext ? `.${ext}` : ''}`;
+}

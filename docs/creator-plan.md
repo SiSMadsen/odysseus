@@ -242,8 +242,8 @@ So 6b on its own covers "fix a web page" end to end (edit, reload, check, read t
 
 ## Polishing (once we're done)
 Not needed for Creator to work; worth doing once the phases are finished.
-- [ ] **Export the report.** A button on a finished job's report in the Creator window. **Format: Markdown** (my choice): the report is already Markdown, so a `.md` download is exactly what's shown, works offline and opens anywhere. Named `creator-<job id>-<date>.md`, built in the browser from `/api/creator/report/{id}` (no new route). Plus a cheap PDF route: a "Print / Save as PDF" button that prints only the rendered report through the browser's own print dialog, with no PDF library on the server.
-- [ ] In the report's command list, mark commands that ran under "Allow all host commands" (today only one-off approvals say "approved by you").
+- [x] **Export the report.** Two buttons on a finished job's report in the Creator window. **Download .md** (the format I chose): the report exactly as written, saved as `creator-<job id>-<day>.md`, built in the browser (no new route). **Print / Save as PDF**: prints only the rendered report from a hidden frame (no PDF library on the server); the suggested PDF name is the same. Tested: the filename with node; both buttons with a jsdom check (download content and name, print frame content and title).
+- [x] In the report's command list, host commands that ran under "Allow all host commands" are marked "(allowed: all host commands)".
 - [ ] **Decide:** should Creator jobs be able to schedule tasks (`manage_tasks` via `load_tools`)? A scheduled task runs later as an ordinary agent run, outside the job's hooks (no host access, no secrets, but also no protected paths).
 - [ ] The helper's work folder (`/srv/creator-helper/work`) keeps whatever jobs leave there (backups, say). Show its size in Settings > Host helper, or clean it up after a while.
 - [ ] Put the window's jsdom tests in the repo (they were in a scratch folder that has since been wiped), so the live view and reply bar are tested on every run, not only their helper functions.

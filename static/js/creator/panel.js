@@ -788,8 +788,17 @@ function _renderTimeline({ scrollToEnd = false }) {
     const audit = report.audit_log
       ? make('div', { class: 'creator-report-foot', text: `Full audit log on the server: ${report.audit_log}` })
       : null;
+    const download = make('button', { type: 'button', class: 'creator-report-btn', text: 'Download .md',
+      title: 'Save the report as a Markdown file' });
+    download.addEventListener('click', () => _downloadReport(report.report, status));
+    const print = make('button', { type: 'button', class: 'creator-report-btn', text: 'Print / Save as PDF',
+      title: 'Print only the report; choose "Save as PDF" in the print dialog for a PDF' });
+    print.addEventListener('click', () => _printReport(body.innerHTML, status));
     nodes.push(make('div', { class: 'creator-msg creator-msg-report' }, [
-      make('div', { class: 'creator-msg-label', text: 'Report' }), body, audit,
+      make('div', { class: 'creator-report-head' }, [
+        make('div', { class: 'creator-msg-label', text: 'Report' }), download, print,
+      ]),
+      body, audit,
     ]));
   } else if (status.error && !view.isActive(status.status)) {
     nodes.push(make('div', { class: 'creator-system level-error', text: status.error }));
@@ -800,6 +809,48 @@ function _renderTimeline({ scrollToEnd = false }) {
   timeline.replaceChildren(...nodes);
   timeline.querySelectorAll('details.creator-cmd').forEach((d, i) => { if (opened.has(i)) d.open = true; });
   timeline.scrollTop = (scrollToEnd || atEnd) ? timeline.scrollHeight : prevTop;
+}
+
+// ── Report export (Polishing: Markdown download, print to PDF) ─────────
+
+function _downloadReport(markdown, status) {
+  const blob = new Blob([markdown], { type: 'text/markdown;charset=utf-8' });
+  const url = URL.createObjectURL(blob);
+  const a = make('a', { href: url, download: view.reportFilename(status.job_id, status.finished_at || status.started_at) });
+  a.style.display = 'none';
+  document.body.appendChild(a);
+  a.click();
+  a.remove();
+  setTimeout(() => URL.revokeObjectURL(url), 10000);
+}
+
+// Prints from a hidden frame holding only the report, so the rest of the app
+// isn't on the page. `html` is the report as already rendered in the window
+// (the chat's sanitising markdown renderer).
+function _printReport(html, status) {
+  const frame = make('iframe', { title: 'Creator report (print)', 'aria-hidden': 'true' });
+  frame.style.cssText = 'position:fixed;right:0;bottom:0;width:0;height:0;border:0;visibility:hidden;';
+  document.body.appendChild(frame);
+  const doc = frame.contentDocument;
+  doc.open();
+  doc.write('<!doctype html><html><head><meta charset="utf-8"></head><body></body></html>');
+  doc.close();
+  // The title becomes the suggested PDF file name.
+  doc.title = view.reportFilename(status.job_id, status.finished_at || status.started_at, '');
+  const style = doc.createElement('style');
+  style.textContent = [
+    'body{font:13px/1.5 system-ui,-apple-system,"Segoe UI",sans-serif;color:#111;max-width:46rem;margin:1.5rem auto;padding:0 1rem;}',
+    'h1{font-size:1.5em}h2{font-size:1.15em;margin-top:1.4em;border-bottom:1px solid #ccc;padding-bottom:.2em}',
+    'pre,code{font-family:ui-monospace,Menlo,Consolas,monospace;font-size:11px;white-space:pre-wrap;word-break:break-word}',
+    'pre{background:#f4f4f4;padding:8px;border-radius:4px}a{color:inherit}',
+  ].join('\n');
+  doc.head.appendChild(style);
+  doc.body.innerHTML = html;
+  const cleanup = () => setTimeout(() => frame.remove(), 1000);
+  frame.contentWindow.addEventListener('afterprint', cleanup);
+  setTimeout(() => frame.remove(), 120000);   // in case afterprint never fires
+  frame.contentWindow.focus();
+  frame.contentWindow.print();
 }
 
 function _renderItem(item) {

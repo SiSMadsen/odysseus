@@ -211,6 +211,22 @@ def test_host_commands_read_plainly_and_say_where_they_run():
 
 
 @needs_node
+def test_report_filename():
+    out = _run(textwrap.dedent(f"""
+        const v = await import('{_VIEW}');
+        const now = Date.parse('2026-10-03T08:00:00Z');
+        console.log(JSON.stringify([
+          v.reportFilename('cr-7d4782b6aaac', '2026-10-02T11:23:45Z'),
+          v.reportFilename('cr-7d4782b6aaac', '2026-10-02T11:23:45Z', ''),
+          v.reportFilename('cr-x/../y', null, 'md', now),
+        ]));
+    """))
+    assert out == ["creator-cr-7d4782b6aaac-2026-10-02.md",
+                   "creator-cr-7d4782b6aaac-2026-10-02",
+                   "creator-cr-xy-2026-10-03.md"]
+
+
+@needs_node
 def test_panel_module_parses():
     proc = subprocess.run(["node", "--check", str(_PANEL)], capture_output=True, text=True, timeout=30)
     assert proc.returncode == 0, proc.stderr
@@ -230,8 +246,12 @@ def test_window_is_wired_into_sidebar_rail_and_privileges():
 
 def test_panel_only_uses_innerhtml_for_static_markup_and_the_report():
     src = _PANEL.read_text()
-    lines = [ln.strip() for ln in src.splitlines() if ".innerHTML" in ln and not ln.strip().startswith("//")]
-    assert len(lines) == 3, lines
+    # Writes only (reading the rendered report back for printing is fine).
+    lines = [ln.strip() for ln in src.splitlines() if ".innerHTML =" in ln and not ln.strip().startswith("//")]
+    assert len(lines) == 4, lines
     assert any("ICON" in ln for ln in lines)
     assert any("<svg" in ln for ln in lines)
     assert any("markdownModule.mdToHtml(report.report)" in ln for ln in lines)
+    # The print frame gets the report exactly as already rendered above.
+    assert "doc.body.innerHTML = html;" in lines
+    assert "_printReport(body.innerHTML, status)" in src
