@@ -458,6 +458,12 @@ def render_report(data: dict) -> str:
         bullet_list([f"{n.get('at', '')[:19]} {n.get('text')}" for n in (data.get("notes") or [])],
                     "_No notes._"),
     ]
+    if data.get("dialogue"):
+        # Before the progress notes: what you told it matters more.
+        at = parts.index("## Progress notes")
+        parts[at:at] = ["## Your answers", bullet_list(
+            [f"{d.get('question')} → " + (d.get("answer") or "_(no answer: carry on)_")
+             for d in data["dialogue"]], "")]
     if data.get("other"):
         parts += ["## Other notes from the agent", data["other"]]
     return "\n\n".join(parts).strip() + "\n"
@@ -711,6 +717,10 @@ class CreatorManager:
             "owner": owner or "", "redactor": redactor, "audit": audit,
             "notes": [], "commands": [], "failure_counts": {}, "failure_list": [],
             "refused": {}, "rounds": 0, "tool_calls": 0, "segments": 0,
+            # Questions the agent asked (ask_user / STATUS: BLOCKED) and the
+            # user's answers. Kept for every later segment: without them, a
+            # checkpoint after an answer lost it (Phase 8 test 3 re-run).
+            "dialogue": [],
             "tainted": False, "gate_bypassed": bool(approve_untrusted),
             "loaded_tools": set(),
             "pause": None, "resume_event": None, "resume_payload": None,
@@ -1246,6 +1256,11 @@ class CreatorManager:
             notes = live["notes"][-25:]
             cmds = live["commands"][-25:]
             lines = [f"[Creator mode — continuing the same task] {reason}", ""]
+            if live["dialogue"]:
+                lines.append("Questions you asked the user, and their answers (most recent last):")
+                lines += [f"- Q: {d['question'][:500]}\n  A: " + (d["answer"][:1000] if d["answer"]
+                          else "(no answer: carry on as best you can)") for d in live["dialogue"][-20:]]
+                lines.append("")
             lines.append("Your progress notes so far:")
             lines += [f"- {n['text']}" for n in notes] or ["- (none yet)"]
             lines += ["", f"Tool calls so far ({live['tool_calls']} total, most recent last):"]
@@ -1335,6 +1350,8 @@ class CreatorManager:
                     if answer:
                         reason += f"\nThe user also said: {answer}"
                 else:
+                    live["dialogue"].append({"at": _now_iso(), "question": request.get("question") or "",
+                                             "answer": answer})
                     reason = (f"You were blocked and asked: {request.get('question')}\n"
                               + (f"The user answered: {answer}" if answer else
                                  "The user resumed without an answer; carry on as best you can."))
@@ -1388,6 +1405,7 @@ class CreatorManager:
             "failures": live["failure_list"],
             "commands": live["commands"],
             "notes": live["notes"],
+            "dialogue": live["dialogue"],
         })
         job_row = self.get_job(job_id) or {}
         report_data["started_at"] = job_row.get("started_at")

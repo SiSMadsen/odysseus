@@ -109,3 +109,50 @@ def test_real_loop_missing_workspace_stop_can_be_turned_off(monkeypatch, flag, e
     text = "".join(asyncio.run(collect()))
     assert ("No active workspace is set" in text) is expect_canned
     assert bool(model_calls) is (not expect_canned)
+
+
+def _question_card(q, options=("notes.txt", "todo.txt")):
+    return ("sse", {"type": "tool_output", "tool": "ask_user", "ask_user": {
+        "question": q, "options": [{"label": o} for o in options]}})
+
+
+def test_answers_survive_later_checkpoints_and_appear_in_the_report(session_factory):
+    """Phase 8 test 3 re-run (job cr-fb962912d5f0): after an approval, the
+    rebuilt context had no record of the question or the answer, so the agent
+    believed it had never asked and asked again."""
+    calls, executed = [], []
+    script = [
+        [_question_card("Which file name should I use?")],
+        [_card("write_file", "/app/data/agent_workspace/notes.txt\n")],
+        [("text", REPORT)],
+    ]
+
+    async def executor(block, **kw):
+        executed.append(block.content)
+        return "write_file", {"output": "Wrote 0 bytes", "exit_code": 0}
+
+    async def run():
+        mgr = CreatorManager(session_factory=session_factory, agent_loop=scripted(script, calls),
+                             tool_executor=executor)
+        job_id = mgr.start_job("Ask me which file name to use, then create that file.", "u", "m")
+        await _wait_paused(mgr, job_id)
+        mgr.resume_job(job_id, answer="notes.txt")
+        for _ in range(300):   # wait for the second pause (the approval)
+            job = mgr.get_job(job_id)
+            if (job["state"].get("pause") or {}).get("kind") == "approval":
+                break
+            await asyncio.sleep(0.01)
+        mgr.resume_job(job_id, decision="approve_once")
+        await _wait_finished(mgr, job_id)
+        return mgr.get_job(job_id)
+
+    job = asyncio.run(run())
+    after_approval = calls[2]["messages"][-1]["content"]   # the segment after the approval
+    assert "Q: Which file name should I use?" in after_approval
+    assert "A: notes.txt" in after_approval
+    assert "## Your answers\n\n- Which file name should I use? → notes.txt" in job["report"]
+
+
+def test_no_answers_section_when_nothing_was_asked():
+    from src.creator_mode import render_report
+    assert "## Your answers" not in render_report({"status": "done"})

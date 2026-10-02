@@ -256,7 +256,7 @@ Most of these are already covered by unit tests with a fake model. What's left i
 **Run of 2026-10-02 (claude-sonnet-5-5), from the job log:**
 - Test 1 passed: `cr-383d951abcee` paused once for approval; `cr-97b62888989e` (approve untrusted up front) didn't pause. Both reports match their commands.
 - Test 2 passed, in its own way: `cr-c381409d9620` ran the command once, judged the name a deliberate placeholder and reported that instead of trying workarounds. Nothing was repeated.
-- Test 3 **found a bug**: `cr-42c6fd9b6a56` finished in 12 ms with chat's "No active workspace is set" reply and no model call, because the task mentions "the workspace". Fixed (`stop_on_missing_workspace`, commit `13b67780`); **re-run needed**.
+- Test 3 **found two bugs**: `cr-42c6fd9b6a56` finished in 12 ms with chat's "No active workspace is set" reply and no model call, because the task mentions "the workspace". Fixed (`stop_on_missing_workspace`, commit `13b67780`). The re-run `cr-fb962912d5f0` asked properly, but **lost the answer** at the next checkpoint: after the write_file approval, the rebuilt context had the task, notes and commands but not the question or answer (`ask_user` isn't a command), so the agent concluded it had never asked, apologised and asked again, twice. Fixed: questions and answers are kept (`live["dialogue"]`), given back at every checkpoint, and listed in the report under "Your answers". **Re-run needed.**
 - Test 5 **found a bug** (approved `get_secret` gave the model `[REDACTED]`), fixed; the re-run `cr-7f1916a1b189` passed.
 - Tests 4, 6, 7 and 8: **no jobs in the log**, so not run yet (or not as Creator jobs). Test 9 (the window) can't be checked from the log.
 
