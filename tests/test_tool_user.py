@@ -50,12 +50,29 @@ def fake_sudo(tmp_path, monkeypatch):
     return log
 
 
-def test_without_a_tool_user_nothing_changes(monkeypatch):
+def test_without_a_tool_user_nothing_changes(monkeypatch, tmp_path):
     monkeypatch.delenv("ODYSSEUS_TOOL_USER", raising=False)
+    monkeypatch.setattr(tool_user, "MARKER_FILE", str(tmp_path / "missing"))
     assert tool_user.tool_user() == ""
     assert wrap_argv(["bash", "-c", "ls"], {"OPENAI_API_KEY": "x"}) == ["bash", "-c", "ls"]
     tool_user.kill_tool_tree(12345)       # no-op, no error
     tool_user.share_with_tools("/tmp")    # no-op
+
+
+def test_the_entrypoint_marker_works_without_the_environment(monkeypatch, tmp_path):
+    """`docker compose exec` doesn't inherit what the entrypoint exported, so
+    the app (and --check) also read the marker file it writes."""
+    monkeypatch.delenv("ODYSSEUS_TOOL_USER", raising=False)
+    monkeypatch.delenv("ODYSSEUS_TOOL_GROUP", raising=False)
+    marker = tmp_path / "tool-user"
+    marker.write_text("odytools odyshare\n")
+    monkeypatch.setattr(tool_user, "MARKER_FILE", str(marker))
+    assert tool_user.tool_user() == "odytools" and tool_user.tool_group() == "odyshare"
+    monkeypatch.setenv("ODYSSEUS_TOOL_USER", "other")   # the environment wins
+    assert tool_user.tool_user() == "other"
+    ep = (Path(__file__).resolve().parent.parent / "docker" / "entrypoint.sh").read_text()
+    assert 'echo "$TOOL_USER $TOOL_GROUP" > /etc/odysseus/tool-user' in ep
+    assert ep.index("rm -f /etc/odysseus/tool-user") < ep.index("visudo -cf")   # stale marker cleared first
 
 
 def test_wrapper_runs_as_the_tool_user_with_a_clean_environment(monkeypatch):

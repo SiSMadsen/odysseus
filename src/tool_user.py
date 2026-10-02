@@ -33,15 +33,36 @@ TOOL_UMASK = "007"
 _shared_paths: Set[str] = set()
 
 
+# Written by the entrypoint when the set-up succeeded ("<user> <group>"), for
+# processes that don't inherit its environment (docker compose exec).
+MARKER_FILE = "/etc/odysseus/tool-user"
+
+
+def _marker() -> List[str]:
+    try:
+        with open(MARKER_FILE) as f:
+            return f.read().split()
+    except OSError:
+        return []
+
+
 def tool_user() -> str:
     """The tool user's name, or "" when commands run as the app user."""
     if sys.platform == "win32":
         return ""
-    return (os.environ.get("ODYSSEUS_TOOL_USER") or "").strip()
+    user = (os.environ.get("ODYSSEUS_TOOL_USER") or "").strip()
+    if user:
+        return user
+    marker = _marker()
+    return marker[0] if marker else ""
 
 
 def tool_group() -> str:
-    return (os.environ.get("ODYSSEUS_TOOL_GROUP") or "").strip()
+    group = (os.environ.get("ODYSSEUS_TOOL_GROUP") or "").strip()
+    if group:
+        return group
+    marker = _marker()
+    return marker[1] if len(marker) > 1 else ""
 
 
 def clean_env(env: Optional[Dict[str, str]], user: str) -> Dict[str, str]:

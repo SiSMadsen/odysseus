@@ -121,6 +121,7 @@ TOOL_UID="${ODYSSEUS_TOOL_UID:-1001}"
 TOOL_GROUP="${ODYSSEUS_TOOL_GROUP:-odyshare}"
 WORKSPACE_DIR=/app/data/agent_workspace
 unset ODYSSEUS_TOOL_USER ODYSSEUS_TOOL_GROUP
+rm -f /etc/odysseus/tool-user
 if [ "${ODYSSEUS_TOOL_USER_ENABLED:-true}" = "true" ] && command -v sudo >/dev/null 2>&1; then
     if [ "$TOOL_UID" = "$PUID" ]; then
         echo "entrypoint: ODYSSEUS_TOOL_UID must differ from PUID ($PUID); tool user not set up" >&2
@@ -150,8 +151,13 @@ if [ "${ODYSSEUS_TOOL_USER_ENABLED:-true}" = "true" ] && command -v sudo >/dev/n
             mv "$SUDOERS.tmp" "$SUDOERS"
             export ODYSSEUS_TOOL_USER="$TOOL_USER"
             export ODYSSEUS_TOOL_GROUP="$TOOL_GROUP"
+            # Also for processes that don't inherit this environment, such as
+            # `docker compose exec ... python -m src.tool_user --check`.
+            mkdir -p /etc/odysseus
+            echo "$TOOL_USER $TOOL_GROUP" > /etc/odysseus/tool-user
+            chmod 0644 /etc/odysseus/tool-user
         else
-            rm -f "$SUDOERS.tmp" "$SUDOERS"
+            rm -f "$SUDOERS.tmp" "$SUDOERS" /etc/odysseus/tool-user
             echo "entrypoint: WARNING: setting up the tool user failed; the agent's tools run as $ODY_USER (the old way)" >&2
         fi
 
