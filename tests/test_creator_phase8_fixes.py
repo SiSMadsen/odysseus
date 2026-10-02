@@ -156,3 +156,33 @@ def test_answers_survive_later_checkpoints_and_appear_in_the_report(session_fact
 def test_no_answers_section_when_nothing_was_asked():
     from src.creator_mode import render_report
     assert "## Your answers" not in render_report({"status": "done"})
+
+
+def test_protected_paths_never_hold_a_question_or_plan(session_factory):
+    """Phase 8 test 4 (job cr-da4f3c975b3d): a question mentioning
+    /etc/hostname was held as a protected action."""
+    from src.creator_safety import make_protected_action_check
+    check = make_protected_action_check(["/etc"])
+    question = json.dumps({"question": "You denied reading /etc/hostname. How should I proceed?",
+                           "options": [{"label": "Use host_exec"}]})
+    assert check("ask_user", question) is None
+    assert check("update_plan", '{"plan": "read /etc/hostname"}') is None
+    assert check("load_tools", '{"search": "/etc"}') is None
+    # Anything that acts is still held, including tools the table doesn't know.
+    assert "protected path /etc" in check("read_file", "/etc/hostname")
+    assert "protected path /etc" in check("bash", "cat /etc/hostname")
+    assert "protected path /etc" in check("host_exec", '{"command": "cat /etc/hostname"}')
+    assert "protected path /etc" in check("mcp__files__read", "/etc/hostname")
+
+    # And through a job's own gate.
+    calls = []
+
+    async def run():
+        mgr = CreatorManager(session_factory=session_factory, agent_loop=scripted([], calls))
+        job_id = mgr.start_job("t", "u", "m", protected_paths=["/etc"])
+        await _wait_finished(mgr, job_id)
+
+    asyncio.run(run())
+    gate = calls[0]["protected_action_check"]
+    assert gate("ask_user", question) is None
+    assert gate("bash", "cat /etc/hostname")

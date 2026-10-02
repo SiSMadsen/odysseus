@@ -158,6 +158,15 @@ def protected_paths_from_settings() -> List[str]:
     return [p.strip() for p in raw if isinstance(p, str) and p.strip()]
 
 
+def _acts_on_nothing(tool_name: Any) -> bool:
+    """Tools whose only effect is talking to the user or changing the run's own
+    plan or tool list (ask_user, update_plan, load_tools), per the capability
+    table. Protected paths are about actions, so these are never held."""
+    from src.tool_capabilities import ToolEffect, capabilities_for_action
+    caps = capabilities_for_action(tool_name, None)
+    return caps.known and caps.effects <= {ToolEffect.USER_INTERACTION}
+
+
 def make_protected_action_check(paths: Iterable[str]) -> Optional[Callable[[Any, Any], Optional[str]]]:
     """A check for ToolRunSecurityContext.protected_action_check, or None when
     nothing is protected. Matches a protected path anywhere in the tool input
@@ -173,6 +182,11 @@ def make_protected_action_check(paths: Iterable[str]) -> Optional[Callable[[Any,
         return None
 
     def check(tool_name: Any, content: Any) -> Optional[str]:
+        if _acts_on_nothing(tool_name):
+            # Asking the user about /etc doesn't touch /etc (Phase 8 test 4,
+            # job cr-da4f3c975b3d: a question mentioning /etc/hostname was
+            # held for approval, and the approved question never reached you).
+            return None
         if isinstance(content, str):
             text = content
         else:
