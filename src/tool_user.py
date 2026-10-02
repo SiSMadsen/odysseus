@@ -12,7 +12,8 @@ the app user's uid).
 Without ODYSSEUS_TOOL_USER (outside Docker, Windows, or set-up disabled or
 failed) every function here leaves things as they were.
 
-Inside the container, `python -m src.tool_user --check` checks the set-up.
+Inside the container, as the app user, `python -m src.tool_user --check` checks the
+set-up: `docker compose exec -u odysseus odysseus python -m src.tool_user --check`.
 """
 
 import os
