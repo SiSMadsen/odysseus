@@ -3458,6 +3458,7 @@ async def stream_agent_loop(
     tool_result_hook=None,
     untrusted_gate_bypassed: bool = False,
     caller_approved_check=None,
+    teacher_escalation: bool = True,
 ) -> AsyncGenerator[str, None]:
     """Streaming agent loop generator.
 
@@ -6497,7 +6498,9 @@ async def stream_agent_loop(
     # gets a turn (with its own tool calls forwarded to the user) and
     # a skill is saved ONLY if the teacher actually succeeds. Skipped
     # when we ARE the teacher to avoid recursion.
-    if not _is_teacher_run and not guide_only and not _awaiting_user:
+    # Callers whose runs carry their own safety hooks (Creator mode) turn it
+    # off: the teacher's nested run doesn't get those hooks.
+    if teacher_escalation and not _is_teacher_run and not guide_only and not _awaiting_user:
         try:
             from src.teacher_escalation import run_teacher_inline
             async for evt in run_teacher_inline(

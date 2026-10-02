@@ -321,3 +321,89 @@ def test_real_loop_without_caller_approval_still_hits_the_untrusted_gate(monkeyp
     asks = [e["ask_user"] for e in events if isinstance(e.get("ask_user"), dict)]
     assert asks and asks[0]["action"]["tool"] == HOST_EXEC_TOOL
     assert "External untrusted context" in asks[0]["description"]
+
+
+# ---------------------------------------------------------------------------
+# Found in the first host run (2026-10-02)
+# ---------------------------------------------------------------------------
+
+def test_creator_turns_teacher_escalation_off(session_factory):
+    calls = []
+
+    async def run():
+        mgr = CreatorManager(session_factory=session_factory, agent_loop=scripted([], calls))
+        job_id = mgr.start_job("t", "u", "m")
+        await _wait_finished(mgr, job_id)
+
+    asyncio.run(run())
+    assert calls[0]["teacher_escalation"] is False
+
+
+@pytest.mark.parametrize("flag,expect_teacher", [(None, True), (False, False)])
+def test_real_loop_skips_the_teacher_when_asked(monkeypatch, flag, expect_teacher):
+    import src.agent_loop as agent_loop
+    import src.teacher_escalation as teacher
+    monkeypatch.setattr(agent_loop, "get_setting", lambda key, default=None: default, raising=False)
+    monkeypatch.setattr(agent_loop, "get_mcp_manager", lambda: None, raising=False)
+    monkeypatch.setattr(agent_loop, "estimate_tokens", lambda *a, **k: 10)
+    monkeypatch.setattr(agent_loop, "blocked_tools_for_owner", lambda owner: set(), raising=False)
+    called = []
+
+    async def fake_teacher(**kw):
+        called.append(kw)
+        yield f"data: {json.dumps({'delta': 'teacher was here'})}\n\n"
+
+    async def fake_stream(*args, **kwargs):
+        yield f"data: {json.dumps({'delta': 'Done.'})}\n\n"
+        yield "data: [DONE]\n\n"
+
+    monkeypatch.setattr(teacher, "run_teacher_inline", fake_teacher)
+    monkeypatch.setattr(agent_loop, "stream_llm_with_fallback", fake_stream)
+    kwargs = {} if flag is None else {"teacher_escalation": flag}
+
+    async def collect():
+        return [c async for c in agent_loop.stream_agent_loop(
+            "http://local.test/v1", "m",
+            # A real task: a bare "hi" takes the loop's fast path, which has no teacher step.
+            [{"role": "user", "content": "check the disk usage on this server and report it"}],
+            max_rounds=1, relevant_tools={"bash"}, forced_tools={"bash"}, **kwargs)]
+
+    chunks = asyncio.run(collect())
+    assert bool(called) is expect_teacher
+    assert any("teacher was here" in c for c in chunks) is expect_teacher
+
+
+def test_notes_from_separate_rounds_dont_run_together(session_factory):
+    calls = []
+    script = [[
+        ("text", "PROGRESS: edited in place, backup in the work dir."),
+        ("tool", "bash", "ls", {"output": "x", "exit_code": 0}),
+        ("text", "The new title is shorter.PROGRESS: checked the bytes against the backup"),
+        ("sse", {"type": "agent_step", "round": 2}),
+        ("text", "PROGRESS: reloaded Apache\n" + REPORT),
+    ]]
+
+    async def run():
+        mgr = CreatorManager(session_factory=session_factory, agent_loop=scripted(script, calls))
+        job_id = mgr.start_job("t", "u", "m")
+        await _wait_finished(mgr, job_id)
+        return mgr.get_job(job_id)
+
+    job = asyncio.run(run())
+    notes = [n["text"] for n in job["state"]["notes"] if n.get("source") == "agent"]
+    assert notes == ["edited in place, backup in the work dir.",
+                     "checked the bytes against the backup",
+                     "reloaded Apache"]
+
+
+def test_report_shows_host_commands_plainly():
+    from src.creator_mode import render_report
+    md = render_report({"status": "done", "commands": [
+        {"n": 1, "tool": HOST_EXEC_TOOL, "command": json.dumps({"command": "systemctl reload apache2"}),
+         "ok": True, "exit_code": 0, "approved": True},
+        {"n": 2, "tool": HOST_EXEC_TOOL, "command": "{not json", "ok": True, "exit_code": 0},
+        {"n": 3, "tool": "bash", "command": '{"command": "x"}', "ok": True, "exit_code": 0},
+    ]})
+    assert "1. [host_exec] `systemctl reload apache2` — ok (approved by you)" in md
+    assert "2. [host_exec] `{not json` — ok" in md
+    assert '3. [bash] `{"command": "x"}` — ok' in md

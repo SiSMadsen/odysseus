@@ -100,10 +100,15 @@ _JOB_ID_RE = re.compile(r"^cr-[a-f0-9]{12}$")
 # headings and STATUS lines back on a line of their own before parsing.
 _INLINE_HEADING_RE = re.compile(r"(?<=[^\s#])[ \t]*(?=#{1,6}[ \t]+What\b)", re.I)
 _INLINE_STATUS_RE = re.compile(r"(?<=\S)[ \t]+(?=STATUS:[ \t]*(?:DONE|BLOCKED)\b)", re.I)
+# Same for a PROGRESS: marker run into the previous sentence ("…work dir.PROGRESS:
+# …", seen in the first host run). Upper case only, so "progress: 50%" in
+# ordinary text isn't split.
+_INLINE_PROGRESS_RE = re.compile(r"(?<=\S)[ \t]*(?=PROGRESS:\s)")
 
 
 def _split_inline_markers(text: str) -> str:
     text = _INLINE_HEADING_RE.sub("\n", text or "")
+    text = _INLINE_PROGRESS_RE.sub("\n", text)
     return _INLINE_STATUS_RE.sub("\n", text)
 _NOTE_RE = re.compile(r"^[ \t>*-]*PROGRESS:\s*(.+?)\s*$", re.M | re.I)
 _STATUS_RE = re.compile(r"^[ \t>*]*STATUS:\s*(DONE|BLOCKED)\b[ \t:—-]*(.*?)\s*$", re.M | re.I)
@@ -403,6 +408,18 @@ _STATUS_LABELS = {
 }
 
 
+def _display_command(tool, command) -> str:
+    """host_exec's JSON arguments shown as the bare command, as in the window."""
+    if tool == HOST_EXEC_TOOL and isinstance(command, str) and command.lstrip().startswith("{"):
+        try:
+            args = json.loads(command)
+        except ValueError:
+            return command
+        if isinstance(args, dict) and isinstance(args.get("command"), str):
+            return args["command"]
+    return command
+
+
 def render_report(data: dict) -> str:
     """Markdown for the structured report."""
     def bullet_list(items, empty):
@@ -414,7 +431,8 @@ def render_report(data: dict) -> str:
         code = c.get("exit_code")
         mark = "ok" if c.get("ok") else f"failed, exit {code}" if code is not None else "failed"
         approved = " (approved by you)" if c.get("approved") else ""
-        cmd_lines.append(f"{c.get('n')}. [{c.get('tool')}] `{c.get('command')}` — {mark}{approved}")
+        cmd_lines.append(f"{c.get('n')}. [{c.get('tool')}] `{_display_command(c.get('tool'), c.get('command'))}`"
+                         f" — {mark}{approved}")
 
     parts = [
         "# Creator report",
@@ -1009,6 +1027,10 @@ class CreatorManager:
                 workload="background",
                 protected_action_check=live["protected_check"],
                 caller_approved_check=lambda t, c: t == HOST_EXEC_TOOL and live["host_all_approved"],
+                # Never in Creator: the teacher's nested run would run tools
+                # without this job's protected paths, scrubbing, failure rule
+                # and host gate (found in the first host run, 2026-10-02).
+                teacher_escalation=False,
                 relevant_tools=job_tools(),
                 forced_tools=job_tools(),
                 # Known secret values are blanked from tool results before the
@@ -1057,6 +1079,12 @@ class CreatorManager:
                     # Raw provider error chunk; keep it in the log for diagnosis.
                     add_event({"type": "model_error", "error": _truncate(str(data.get("error")), 1000)})
                     continue
+                if (etype in ("agent_step", "tool_start") and text_parts
+                        and not text_parts[-1].endswith("\n")):
+                    # Text from separate rounds isn't one sentence: without
+                    # this, "…dir." + "The new title…" ran together and a
+                    # PROGRESS line swallowed the next round's text.
+                    text_parts.append("\n")
                 if etype == "agent_step":
                     live["rounds"] += 1
                 elif etype == "rounds_exhausted":
