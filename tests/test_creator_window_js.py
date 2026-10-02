@@ -252,6 +252,8 @@ def test_panel_only_uses_innerhtml_for_static_markup_and_the_report():
     assert any("ICON" in ln for ln in lines)
     assert any("<svg" in ln for ln in lines)
     assert any("markdownModule.mdToHtml(report.report)" in ln for ln in lines)
-    # The print frame gets the report exactly as already rendered above.
-    assert "doc.body.innerHTML = html;" in lines
-    assert "_printReport(body.innerHTML, status)" in src
+    # The PDF is made from the report exactly as already rendered above.
+    assert "content.innerHTML = html;" in lines
+    assert "_downloadReportPdf(body.innerHTML, status, pdf)" in src
+    # It downloads (the bundled html2pdf); no print dialog.
+    assert "/static/lib/html2pdf.bundle.min.js" in src and ".print()" not in src

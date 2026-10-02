@@ -791,12 +791,12 @@ function _renderTimeline({ scrollToEnd = false }) {
     const download = make('button', { type: 'button', class: 'creator-report-btn', text: 'Download .md',
       title: 'Save the report as a Markdown file' });
     download.addEventListener('click', () => _downloadReport(report.report, status));
-    const print = make('button', { type: 'button', class: 'creator-report-btn', text: 'Print / Save as PDF',
-      title: 'Print only the report; choose "Save as PDF" in the print dialog for a PDF' });
-    print.addEventListener('click', () => _printReport(body.innerHTML, status));
+    const pdf = make('button', { type: 'button', class: 'creator-report-btn', text: 'Download .pdf',
+      title: 'Save the report as a PDF file' });
+    pdf.addEventListener('click', () => _downloadReportPdf(body.innerHTML, status, pdf));
     nodes.push(make('div', { class: 'creator-msg creator-msg-report' }, [
       make('div', { class: 'creator-report-head' }, [
-        make('div', { class: 'creator-msg-label', text: 'Report' }), download, print,
+        make('div', { class: 'creator-msg-label', text: 'Report' }), download, pdf,
       ]),
       body, audit,
     ]));
@@ -811,7 +811,7 @@ function _renderTimeline({ scrollToEnd = false }) {
   timeline.scrollTop = (scrollToEnd || atEnd) ? timeline.scrollHeight : prevTop;
 }
 
-// ── Report export (Polishing: Markdown download, print to PDF) ─────────
+// ── Report export (Polishing: Markdown and PDF downloads) ──────────────
 
 function _downloadReport(markdown, status) {
   const blob = new Blob([markdown], { type: 'text/markdown;charset=utf-8' });
@@ -824,33 +824,74 @@ function _downloadReport(markdown, status) {
   setTimeout(() => URL.revokeObjectURL(url), 10000);
 }
 
-// Prints from a hidden frame holding only the report, so the rest of the app
-// isn't on the page. `html` is the report as already rendered in the window
-// (the chat's sanitising markdown renderer).
-function _printReport(html, status) {
-  const frame = make('iframe', { title: 'Creator report (print)', 'aria-hidden': 'true' });
-  frame.style.cssText = 'position:fixed;right:0;bottom:0;width:0;height:0;border:0;visibility:hidden;';
-  document.body.appendChild(frame);
-  const doc = frame.contentDocument;
-  doc.open();
-  doc.write('<!doctype html><html><head><meta charset="utf-8"></head><body></body></html>');
-  doc.close();
-  // The title becomes the suggested PDF file name.
-  doc.title = view.reportFilename(status.job_id, status.finished_at || status.started_at, '');
-  const style = doc.createElement('style');
-  style.textContent = [
-    'body{font:13px/1.5 system-ui,-apple-system,"Segoe UI",sans-serif;color:#111;max-width:46rem;margin:1.5rem auto;padding:0 1rem;}',
-    'h1{font-size:1.5em}h2{font-size:1.15em;margin-top:1.4em;border-bottom:1px solid #ccc;padding-bottom:.2em}',
-    'pre,code{font-family:ui-monospace,Menlo,Consolas,monospace;font-size:11px;white-space:pre-wrap;word-break:break-word}',
-    'pre{background:#f4f4f4;padding:8px;border-radius:4px}a{color:inherit}',
-  ].join('\n');
-  doc.head.appendChild(style);
-  doc.body.innerHTML = html;
-  const cleanup = () => setTimeout(() => frame.remove(), 1000);
-  frame.contentWindow.addEventListener('afterprint', cleanup);
-  setTimeout(() => frame.remove(), 120000);   // in case afterprint never fires
-  frame.contentWindow.focus();
-  frame.contentWindow.print();
+// The PDF library the document editor already uses (static/lib), loaded on
+// first use.
+let _html2pdfReady = null;
+function _ensureHtml2Pdf() {
+  if (window.html2pdf) return Promise.resolve();
+  if (_html2pdfReady) return _html2pdfReady;
+  _html2pdfReady = new Promise((resolve, reject) => {
+    const s = document.createElement('script');
+    s.src = '/static/lib/html2pdf.bundle.min.js';
+    s.onload = resolve;
+    s.onerror = () => { _html2pdfReady = null; reject(new Error('Could not load the PDF library.')); };
+    document.head.appendChild(s);
+  });
+  return _html2pdfReady;
+}
+
+// Black on white whatever the app's theme; long command lines wrap.
+const _PDF_STYLE = [
+  '.creator-pdf{font:12px/1.5 system-ui,-apple-system,"Segoe UI",sans-serif;color:#111;background:#fff;padding:4px 2px;}',
+  '.creator-pdf h1{font-size:20px;margin:0 0 8px}',
+  '.creator-pdf h2{font-size:15px;margin:16px 0 6px;border-bottom:1px solid #ccc;padding-bottom:2px}',
+  '.creator-pdf p,.creator-pdf li{margin:3px 0}',
+  '.creator-pdf pre,.creator-pdf code{font-family:ui-monospace,Menlo,Consolas,monospace;font-size:10px;white-space:pre-wrap;word-break:break-word;color:#111}',
+  '.creator-pdf pre{background:#f4f4f4;padding:6px;border-radius:3px}',
+  '.creator-pdf a{color:#111;text-decoration:none}',
+  '.creator-pdf li,.creator-pdf pre,.creator-pdf h2{page-break-inside:avoid}',
+].join('\n');
+
+// `html` is the report as already rendered in the window (the chat's
+// sanitising markdown renderer).
+async function _downloadReportPdf(html, status, btn) {
+  const label = btn ? btn.textContent : '';
+  if (btn) { btn.disabled = true; btn.textContent = 'Making PDF…'; }
+  try {
+    await _ensureHtml2Pdf();
+    const container = make('div', { class: 'creator-pdf' });
+    const style = document.createElement('style');
+    style.textContent = _PDF_STYLE;
+    const content = make('div');
+    content.innerHTML = html;
+    container.append(style, content);
+    await window.html2pdf().set({
+      margin: 12,
+      filename: view.reportFilename(status.job_id, status.finished_at || status.started_at, 'pdf'),
+      image: { type: 'jpeg', quality: 0.95 },
+      // 1.5 rather than 2: a long report (many commands) stays under the
+      // browser's canvas size limit.
+      html2canvas: { scale: 1.5, backgroundColor: '#ffffff' },
+      jsPDF: { unit: 'mm', format: 'a4', orientation: 'portrait' },
+      pagebreak: { mode: ['css', 'legacy'] },
+    }).from(container).save();
+  } catch (e) {
+    _showReportError(btn, `PDF failed: ${e.message || e}`);
+    return;
+  } finally {
+    if (btn) { btn.disabled = false; btn.textContent = label; }
+  }
+}
+
+function _showReportError(btn, text) {
+  const head = btn && btn.parentElement;
+  if (!head) return;
+  let msg = head.querySelector('.creator-report-error');
+  if (!msg) {
+    msg = make('span', { class: 'creator-report-error', role: 'status' });
+    head.appendChild(msg);
+  }
+  msg.textContent = text;
 }
 
 function _renderItem(item) {

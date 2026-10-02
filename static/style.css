@@ -41616,3 +41616,4 @@ body.settings-sidebar-resize-active {
   background: transparent; color: var(--fg); font: inherit; font-size: 11px;
 }
 .creator-report-btn:hover { border-color: var(--accent, var(--red)); }
+.creator-report-error { flex-basis: 100%; font-size: 11px; color: #d9534f; }
