@@ -109,6 +109,75 @@ for dir in /app/data /app/logs /app/.ssh /app/.local; do
     repair_bind_mount_ownership "$dir"
 done
 
+# ── Phase 5a (docs/creator-plan.md): a separate user for the agent's tools ──
+# The agent's bash/python run as TOOL_USER, not as the app user, so they
+# can't read the app's key, database, settings or memory, or reach the host
+# helpers (which accept only the app user's uid). The single sudo rule lets
+# the app user run commands as TOOL_USER and nothing else; TOOL_USER gets no
+# sudo rights. The app finds the tool user through ODYSSEUS_TOOL_USER.
+# Set ODYSSEUS_TOOL_USER_ENABLED=false to keep the old behaviour.
+TOOL_USER="${ODYSSEUS_TOOL_USER:-odytools}"
+TOOL_UID="${ODYSSEUS_TOOL_UID:-1001}"
+TOOL_GROUP="${ODYSSEUS_TOOL_GROUP:-odyshare}"
+WORKSPACE_DIR=/app/data/agent_workspace
+unset ODYSSEUS_TOOL_USER
+if [ "${ODYSSEUS_TOOL_USER_ENABLED:-true}" = "true" ] && command -v sudo >/dev/null 2>&1; then
+    if [ "$TOOL_UID" = "$PUID" ]; then
+        echo "entrypoint: ODYSSEUS_TOOL_UID must differ from PUID ($PUID); tool user not set up" >&2
+    else
+        # Every step tolerates failure (this script runs with set -e): a
+        # problem here must never stop Odysseus from starting. It then runs
+        # tools the old way, and says so in the log.
+        tool_ok=true
+        getent group "$TOOL_GROUP" >/dev/null 2>&1 || groupadd -r "$TOOL_GROUP" || tool_ok=false
+        if ! getent passwd "$TOOL_USER" >/dev/null 2>&1; then
+            useradd -u "$TOOL_UID" -U -m -d "/home/$TOOL_USER" -s /bin/bash "$TOOL_USER" || tool_ok=false
+        fi
+        usermod -aG "$TOOL_GROUP" "$TOOL_USER" 2>/dev/null || tool_ok=false
+        usermod -aG "$TOOL_GROUP" "$ODY_USER" 2>/dev/null || true
+        mkdir -p "/home/$TOOL_USER" && chown "$TOOL_USER:" "/home/$TOOL_USER" \
+            && chmod 0700 "/home/$TOOL_USER" || tool_ok=false
+
+        SUDOERS=/etc/sudoers.d/odysseus-tools
+        {
+            echo "# Written by docker/entrypoint.sh (Phase 5a). The app user may run"
+            echo "# commands as the tool user, with a clean environment; nothing else."
+            echo "Defaults:$ODY_USER !requiretty, env_reset, !use_pty, !lecture"
+            echo "$ODY_USER ALL=($TOOL_USER) NOPASSWD: ALL"
+        } > "$SUDOERS.tmp"
+        chmod 0440 "$SUDOERS.tmp" || tool_ok=false
+        if [ "$tool_ok" = true ] && visudo -cf "$SUDOERS.tmp" >/dev/null 2>&1; then
+            mv "$SUDOERS.tmp" "$SUDOERS"
+            export ODYSSEUS_TOOL_USER="$TOOL_USER"
+        else
+            rm -f "$SUDOERS.tmp" "$SUDOERS"
+            echo "entrypoint: WARNING: setting up the tool user failed; the agent's tools run as $ODY_USER (the old way)" >&2
+        fi
+
+        # Nothing under data/ is readable by "other" users (the tool user is
+        # one), except passing through data/ itself to reach the shared work
+        # folder. Symlinks are left alone. Skipped for a broad host mount.
+        data_root="$(mount_root_for /app/data)"
+        if [ -d /app/data ] && ! is_broad_mount_root "$data_root"; then
+            find /app/data -xdev ! -type l \( -perm -o=r -o -perm -o=w -o -perm -o=x \) \
+                -exec chmod o-rwx {} + 2>/dev/null || true
+            chmod o+x /app/data || true
+        fi
+
+        # The work folder is shared through the group: the app and the tool
+        # user can both read and write everything in it, now and later.
+        mkdir -p "$WORKSPACE_DIR" || true
+        chown "$PUID:$TOOL_GROUP" "$WORKSPACE_DIR" 2>/dev/null || true
+        chmod 2770 "$WORKSPACE_DIR" 2>/dev/null || true
+        chgrp -R "$TOOL_GROUP" "$WORKSPACE_DIR" 2>/dev/null || true
+        chmod -R g+rwX "$WORKSPACE_DIR" 2>/dev/null || true
+        if command -v setfacl >/dev/null 2>&1; then
+            setfacl -R -m "g:$TOOL_GROUP:rwX" "$WORKSPACE_DIR" 2>/dev/null || true
+            setfacl -R -d -m "g:$TOOL_GROUP:rwX" "$WORKSPACE_DIR" 2>/dev/null || true
+        fi
+    fi
+fi
+
 # Cookbook installs vllm/etc. via `pip install --user`, which pulls
 # nvidia-cuda-* wheels into /app/.local but does not set CUDA_HOME or
 # symlink /usr/local/cuda. vllm 0.22+ then crashes during engine init
@@ -143,6 +212,10 @@ export VLLM_USE_FLASHINFER_SAMPLER="${VLLM_USE_FLASHINFER_SAMPLER:-0}"
 # Make Cookbook-installed Python CLIs visible after `pip install --user`.
 # vLLM and helper scripts land here because /app is the non-root user's HOME.
 export PATH="/app/.local/bin:$PATH"
+
+# New files the app writes are not readable by other users (the tool user
+# among them): Phase 5a. The shared work folder has a default ACL instead.
+umask 027
 
 # Run first-time setup as the app user so data/ files get the right ownership.
 # setup.py is idempotent — skips auth.json / .env if they already exist.

@@ -20,6 +20,9 @@ FROM python:3.14-slim
 # chromium provides the actual browser binary used by that MCP server.
 # gosu lets the entrypoint drop privileges cleanly so signals still reach
 # uvicorn directly (no extra shell layer like `su`/`sudo` would add).
+# sudo + acl: the agent's bash/python run as a separate tool user
+# (docs/creator-plan.md, Phase 5a). The only sudo rule lets the app user run
+# commands AS that user; acl shares the agent's work folder with it.
 RUN apt-get update && apt-get install -y --no-install-recommends \
     build-essential \
     cmake \
@@ -31,6 +34,8 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     tmux \
     openssh-client \
     gosu \
+    sudo \
+    acl \
     libgl1 \
     libglib2.0-0t64 \
     libxcb1 \
