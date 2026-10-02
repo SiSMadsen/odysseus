@@ -407,3 +407,29 @@ def test_report_shows_host_commands_plainly():
     assert "1. [host_exec] `systemctl reload apache2` — ok (approved by you)" in md
     assert "2. [host_exec] `{not json` — ok" in md
     assert '3. [bash] `{"command": "x"}` — ok' in md
+
+
+def test_report_marks_commands_run_under_allow_all(session_factory):
+    calls = []
+    script = [[_host_card()],
+              [("tool", HOST_EXEC_TOOL, '{"command": "uptime"}', {"output": "up", "exit_code": 0}),
+               ("text", REPORT)]]
+
+    async def executor(block, **kw):
+        return "host_exec", {"output": "reloaded", "exit_code": 0}
+
+    async def run():
+        mgr = CreatorManager(session_factory=session_factory, agent_loop=scripted(script, calls),
+                             tool_executor=executor, host_helper=FakeHelper())
+        job_id = mgr.start_job("t", "u", "m")
+        await _wait_paused(mgr, job_id)
+        mgr.resume_job(job_id, decision="approve_job")
+        await _wait_finished(mgr, job_id)
+        return mgr.get_job(job_id)
+
+    job = asyncio.run(run())
+    cmds = job["state"]["report"]["commands"]
+    assert cmds[0].get("approved") is True and "allowed_all" not in cmds[0]
+    assert cmds[1].get("allowed_all") is True
+    assert "`uptime` — ok (allowed: all host commands)" in job["report"]
+    assert "`systemctl reload apache2` — ok (approved by you)" in job["report"]

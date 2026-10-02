@@ -430,7 +430,8 @@ def render_report(data: dict) -> str:
     for c in commands:
         code = c.get("exit_code")
         mark = "ok" if c.get("ok") else f"failed, exit {code}" if code is not None else "failed"
-        approved = " (approved by you)" if c.get("approved") else ""
+        approved = (" (approved by you)" if c.get("approved")
+                    else " (allowed: all host commands)" if c.get("allowed_all") else "")
         cmd_lines.append(f"{c.get('n')}. [{c.get('tool')}] `{_display_command(c.get('tool'), c.get('command'))}`"
                          f" — {mark}{approved}")
 
@@ -898,6 +899,9 @@ class CreatorManager:
             }
             if approved:
                 entry["approved"] = True
+            elif tool == HOST_EXEC_TOOL and live["host_all_approved"] and not entry["blocked"]:
+                # Ran without its own card: covered by "Allow all host commands".
+                entry["allowed_all"] = True
             live["commands"].append(entry)
             if len(live["commands"]) > _MAX_COMMANDS:
                 del live["commands"][: len(live["commands"]) - _MAX_COMMANDS]
