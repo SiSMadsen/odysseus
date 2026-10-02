@@ -1,0 +1,12 @@
+# Creator root helper (docs/creator-plan.md, Phase 5b; host_helper/README.md).
+# Enable AFTER installing the root helper on the host (so /srv/creator-root
+# exists, owned by root, with the ACL for uid 1000), by adding it to
+# COMPOSE_FILE in .env:
+#   COMPOSE_FILE=docker-compose.yml:docker/creator-helper.yml:docker/creator-root-helper.yml
+#
+# Mounts only the root helper's socket folder, read-only. Its control socket
+# (/run/creator-root) is never mounted: only root on the host can use it.
+services:
+  odysseus:
+    volumes:
+      - /srv/creator-root:/app/root-helper:ro

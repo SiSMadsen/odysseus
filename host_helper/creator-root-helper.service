@@ -1,0 +1,56 @@
+# Creator root helper (docs/creator-plan.md, Phase 5b).
+# Install: see host_helper/README.md ("The root helper"). Kill switch:
+# `sudo systemctl stop creator-root-helper` (root is off at once; a restart
+# also starts with root off).
+[Unit]
+Description=Odysseus Creator root helper (the root switch)
+After=local-fs.target
+
+[Service]
+Type=simple
+# Root, on purpose: the switch has to be out of reach of everything it guards.
+User=root
+ExecStart=/usr/bin/python3 /opt/creator-root/root_helper.py serve --allow-uid 1000
+# /var/lib/creator-root (the last code used), /var/log/creator-root (audit
+# log), /run/creator-root (the control socket): root only.
+StateDirectory=creator-root
+StateDirectoryMode=0700
+LogsDirectory=creator-root
+LogsDirectoryMode=0700
+RuntimeDirectory=creator-root
+RuntimeDirectoryMode=0700
+Restart=on-failure
+RestartSec=5
+
+# Hardening. In 5b the helper is only a switch: it runs no commands, so it is
+# locked down as far as it goes. 5d (root commands) loosens this on purpose.
+# - No capabilities at all: as the owner of its own files it needs none.
+# - No network: it listens only on its two Unix sockets.
+# - Writable: only its socket folder and the directories above. /etc (the
+#   TOTP key) is read-only to it; /home is invisible.
+NoNewPrivileges=yes
+CapabilityBoundingSet=
+AmbientCapabilities=
+PrivateNetwork=yes
+RestrictAddressFamilies=AF_UNIX
+ProtectSystem=strict
+ReadWritePaths=/srv/creator-root
+ProtectHome=yes
+PrivateTmp=yes
+PrivateDevices=yes
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectKernelLogs=yes
+ProtectControlGroups=yes
+ProtectClock=yes
+ProtectHostname=yes
+RestrictNamespaces=yes
+RestrictRealtime=yes
+RestrictSUIDSGID=yes
+LockPersonality=yes
+MemoryDenyWriteExecute=yes
+SystemCallArchitectures=native
+UMask=0077
+
+[Install]
+WantedBy=multi-user.target

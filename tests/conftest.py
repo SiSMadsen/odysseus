@@ -22,6 +22,8 @@ os.environ.setdefault("DATABASE_URL", "sqlite:///:memory:")
 # where the real helper is installed. Tests that want a helper start one on a
 # temporary socket or inject a fake.
 os.environ.setdefault("CREATOR_HELPER_SOCKET", "/nonexistent/creator-helper-test.sock")
+# The same for the root helper (Phase 5b).
+os.environ.setdefault("CREATOR_ROOT_SOCKET", "/nonexistent/creator-root-test.sock")
 
 # Pre-import real heavy modules BEFORE any test file's module-level stubs can
 # replace them with MagicMock. Some test files (e.g. test_llm_core_sanitize_*)

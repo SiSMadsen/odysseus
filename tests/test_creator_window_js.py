@@ -281,3 +281,39 @@ def test_creator_limits_card_is_admin_only_and_wired():
     for el_id in ("creator-protected-paths", "creator-max-minutes-setting", "creator-limits-save"):
         assert f'id="{el_id}"' in index and f"'{el_id}'" in secrets
     assert "creator_protected_paths: paths, creator_max_minutes: minutes" in secrets
+
+
+@needs_node
+def test_root_switch_helpers():
+    out = _run(textwrap.dedent(f"""
+        const v = await import('{_VIEW}');
+        console.log(JSON.stringify({{
+          clock: [v.rootClock(1781), v.rootClock(59.2), v.rootClock(3725), v.rootClock(-4), v.rootClock(null)],
+          minutes: [
+            v.rootMinutes(30, ''), v.rootMinutes('custom', ' 45 '), v.rootMinutes('custom', '90'),
+            v.rootMinutes('custom', '91'), v.rootMinutes('custom', '0'), v.rootMinutes('custom', '2.5'),
+            v.rootMinutes('custom', ''), v.rootMinutes('custom', '60', 40), v.rootMinutes('custom', '95', 500),
+            v.rootMinutes(60, '', 40),
+          ],
+          code: [v.rootCode('123 456'), v.rootCode(' 012345 '), v.rootCode('12345'), v.rootCode('12a456'), v.rootCode(null)],
+          durations: v.ROOT_DURATIONS, max: v.ROOT_MAX_MINUTES,
+        }}));
+    """))
+    assert out["clock"] == ["29:41", "1:00", "1:02:05", "0:00", "0:00"]
+    m = out["minutes"]
+    assert m[0] == {"minutes": 30} and m[1] == {"minutes": 45} and m[2] == {"minutes": 90}
+    assert all("error" in x for x in (m[3], m[4], m[5], m[6], m[7], m[8], m[9]))
+    assert "1 to 40" in m[7]["error"] and "1 to 90" in m[8]["error"]
+    assert out["code"] == ["123456", "012345", "", "", ""]
+    assert out["durations"] == [15, 30, 60] and out["max"] == 90
+
+
+def test_root_switch_is_admin_only_and_uses_the_root_routes():
+    src = _PANEL.read_text()
+    assert "if (!window._isAdmin || _root) return;" in src
+    for route in ("`${API}/root/status`", "`${API}/root/enable`", "`${API}/root/revoke`"):
+        assert route in src
+    # Started with the window, stopped when it closes.
+    assert src.count("_rootStart();") == 1 and src.count("_rootStop();") == 1
+    # The code is never kept by the window beyond the input box.
+    assert "localStorage" not in src.split("// ── Root switch")[1].split("// ── Live stream")[0]

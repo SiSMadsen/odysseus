@@ -302,3 +302,39 @@ export function reportFilename(jobId, isoDate, ext = 'md', now = Date.now()) {
   const id = String(jobId || 'job').replace(/[^A-Za-z0-9_-]/g, '');
   return `creator-${id}-${day}${ext ? `.${ext}` : ''}`;
 }
+
+// ── The root switch (Phase 5b) ─────────────────────────────────────────
+
+/** The duration buttons; "Custom" takes any whole number up to the cap. */
+export const ROOT_DURATIONS = [15, 30, 60];
+export const ROOT_MAX_MINUTES = 90;
+
+/** Root's countdown: "29:41", or "1:02:05" past an hour; "0:00" when done. */
+export function rootClock(seconds) {
+  const s = Math.max(0, Math.ceil(Number(seconds) || 0));
+  const h = Math.floor(s / 3600);
+  const m = Math.floor((s % 3600) / 60);
+  const ss = String(s % 60).padStart(2, '0');
+  return h ? `${h}:${String(m).padStart(2, '0')}:${ss}` : `${m}:${ss}`;
+}
+
+/** Minutes for a duration choice: a number from ROOT_DURATIONS, or 'custom'
+ *  with the typed text. {minutes} or {error}. */
+export function rootMinutes(choice, customText, max = ROOT_MAX_MINUTES) {
+  const cap = Math.min(Number(max) || ROOT_MAX_MINUTES, ROOT_MAX_MINUTES);
+  if (choice !== 'custom') {
+    const n = Number(choice);
+    return Number.isInteger(n) && n >= 1 && n <= cap ? { minutes: n } : { error: 'Choose how long.' };
+  }
+  const text = String(customText || '').trim();
+  if (!/^\d+$/.test(text)) return { error: `Type a whole number of minutes, 1 to ${cap}.` };
+  const n = Number(text);
+  if (n < 1 || n > cap) return { error: `Root can be on for 1 to ${cap} minutes.` };
+  return { minutes: n };
+}
+
+/** The authenticator code with spaces removed, or '' unless it's 6 digits. */
+export function rootCode(text) {
+  const code = String(text || '').replace(/\s+/g, '');
+  return /^\d{6}$/.test(code) ? code : '';
+}

@@ -132,6 +132,7 @@ export function openPanel(jobId) {
 
   const header = pane.querySelector('.creator-pane-header');
   if (themeModule && themeModule.makeDraggable && header) themeModule.makeDraggable(pane, header);
+  _rootStart();
 
   if (jobId) {
     refreshHistory();
@@ -155,6 +156,7 @@ export function closePanel() {
   _draftTask = byId('creator-task')?.value || '';
   _viewToken++;
   _stopLive();
+  _rootStop();
   _view = null;
   if (_onDocKeydown) {
     document.removeEventListener('keydown', _onDocKeydown);
@@ -191,7 +193,9 @@ function _buildPane(pane) {
 
   const header = make('div', { class: 'modal-header creator-pane-header' }, [
     title,
-    make('div', { class: 'creator-pane-header-actions' }, [historyBtn, minBtn, closeBtn]),
+    make('div', { class: 'creator-pane-header-actions' }, [
+      make('div', { id: 'creator-root', class: 'creator-root' }), historyBtn, minBtn, closeBtn,
+    ]),
   ]);
 
   const newBtn = make('button', { type: 'button', class: 'creator-new-btn', text: '+ New job' });
@@ -209,6 +213,7 @@ function _buildPane(pane) {
   ]);
 
   pane.appendChild(header);
+  pane.appendChild(make('div', { id: 'creator-root-panel', class: 'creator-root-panel', hidden: true }));
   pane.appendChild(make('div', { class: 'modal-body creator-pane-body', 'data-no-swipe-dismiss': true }, [
     make('div', { class: 'creator-layout' }, [history, main]),
   ]));
@@ -572,6 +577,208 @@ async function _handleStop() {
   } catch (e) {
     if (btn) { btn.disabled = false; btn.textContent = 'Stop'; }
     _setLiveState(`Stop failed: ${e.message}`);
+  }
+}
+
+// ── Root switch (Phase 5b) ──────────────────────────────────────────────
+//
+// Admins only, and only when the root helper's folder is mounted. The root
+// helper on the host holds the switch and checks the authenticator code; this
+// only shows it and passes requests on. Nothing runs as root yet (5d).
+
+const ROOT_POLL_MS = 15000;
+let _root = null;   // { status, until, poll, clock, formOpen, choice, busy, message, panelKey }
+
+function _rootStart() {
+  if (!window._isAdmin || _root) return;
+  _root = {
+    status: null, until: 0, formOpen: false, choice: 30, busy: false, message: '', panelKey: '',
+    poll: setInterval(_rootRefresh, ROOT_POLL_MS),
+    clock: setInterval(_rootTick, 1000),
+  };
+  _rootRefresh();
+}
+
+function _rootStop() {
+  if (!_root) return;
+  clearInterval(_root.poll);
+  clearInterval(_root.clock);
+  _root = null;
+}
+
+async function _rootRefresh() {
+  if (!_root) return;
+  const r = _root;
+  try {
+    _rootSetStatus(await api(`${API}/root/status`));
+  } catch (e) {
+    if (r !== _root) return;
+    // 403: not allowed (the server decides, not window._isAdmin). Show nothing.
+    _rootSetStatus(e.status === 403 ? { installed: false } : { installed: true, available: false, error: e.message });
+  }
+}
+
+function _rootSetStatus(status) {
+  if (!_root) return;
+  _root.status = status || {};
+  _root.until = _root.status.on ? Date.now() + (_root.status.remaining_s || 0) * 1000 : 0;
+  if (_root.status.on) _root.formOpen = false;
+  _rootRender();
+}
+
+function _rootTick() {
+  if (!_root || !_root.status || !_root.status.on) return;
+  const left = (_root.until - Date.now()) / 1000;
+  const clock = byId('creator-root-clock');
+  if (clock) clock.textContent = view.rootClock(left);
+  if (left <= 0) _rootRefresh();
+}
+
+function _rootRender() {
+  const slot = byId('creator-root');
+  const panel = byId('creator-root-panel');
+  if (!slot || !panel || !_root) return;
+  const st = _root.status || {};
+  if (!st.installed) {
+    slot.replaceChildren();
+    panel.hidden = true;
+    return;
+  }
+  if (st.on) {
+    const revoke = make('button', {
+      type: 'button', class: 'creator-root-revoke', text: 'Revoke',
+      title: 'Switch root off now. No code needed.', disabled: _root.busy,
+    });
+    revoke.addEventListener('click', _rootRevoke);
+    slot.replaceChildren(
+      make('span', {
+        class: 'creator-root-on', title: st.expires_at ? `Root switches itself off at ${new Date(st.expires_at).toLocaleTimeString()}` : '',
+      }, [make('span', { text: 'Root on · ' }), make('span', { id: 'creator-root-clock', text: view.rootClock((_root.until - Date.now()) / 1000) })]),
+      revoke,
+    );
+    if (_root.message) slot.appendChild(make('span', { class: 'creator-root-error', role: 'alert', text: _root.message }));
+  } else {
+    const btn = make('button', {
+      type: 'button', class: `creator-root-btn${st.available ? '' : ' unavailable'}`,
+      text: st.available ? 'Root: off' : 'Root: unavailable',
+      title: st.available ? 'Switch root on with a code from your authenticator app' : (st.error || ''),
+      'aria-expanded': _root.formOpen ? 'true' : 'false',
+    });
+    btn.addEventListener('click', () => {
+      _root.formOpen = !_root.formOpen;
+      _root.message = '';
+      _rootRender();
+      if (_root.formOpen) byId('creator-root-code')?.focus();
+    });
+    slot.replaceChildren(btn);
+  }
+  // The panel is rebuilt only when what it shows changes, so a poll doesn't
+  // wipe a code being typed.
+  const key = [_root.formOpen && !st.on, st.available, st.totp_ready, (st.locked_s || 0) > 0,
+    _root.busy, _root.message].join('|');
+  if (key === _root.panelKey) return;
+  _root.panelKey = key;
+  panel.hidden = !(_root.formOpen && !st.on);
+  if (!panel.hidden) _rootRenderPanel(panel, st);
+}
+
+function _rootRenderPanel(panel, st) {
+  const typed = byId('creator-root-code')?.value || '';
+  const customTyped = byId('creator-root-custom')?.value || '';
+  const children = [];
+  if (!st.available) {
+    children.push(make('div', { class: 'creator-root-note error', text: st.error || 'The root helper is not reachable.' }));
+  } else if (!st.totp_ready) {
+    children.push(make('div', { class: 'creator-root-note error', text: st.totp_problem || 'No authenticator key is set up.' }));
+  } else if ((st.locked_s || 0) > 0) {
+    children.push(make('div', {
+      class: 'creator-root-note error',
+      text: `Too many wrong codes. Try again in ${Math.ceil(st.locked_s / 60)} min.`,
+    }));
+  } else {
+    const max = Math.min(st.max_minutes || view.ROOT_MAX_MINUTES, view.ROOT_MAX_MINUTES);
+    const code = make('input', {
+      id: 'creator-root-code', class: 'creator-root-code', type: 'text', inputmode: 'numeric',
+      autocomplete: 'one-time-code', maxlength: '7', placeholder: '6-digit code', 'aria-label': 'Authenticator code',
+    });
+    code.value = typed;
+    code.addEventListener('keydown', (e) => { if (e.key === 'Enter') { e.preventDefault(); _rootEnable(); } });
+    const durations = make('div', { class: 'creator-root-durations', role: 'group', 'aria-label': 'How long' });
+    [...view.ROOT_DURATIONS.filter(m => m <= max), 'custom'].forEach((choice) => {
+      const chip = make('button', {
+        type: 'button', class: `creator-option-chip${_root.choice === choice ? ' selected' : ''}`,
+        text: choice === 'custom' ? 'Custom' : `${choice} min`, 'aria-pressed': _root.choice === choice ? 'true' : 'false',
+      });
+      chip.addEventListener('click', () => {
+        _root.choice = choice;
+        _root.panelKey = '';
+        _rootRender();
+        if (choice === 'custom') byId('creator-root-custom')?.focus();
+      });
+      durations.appendChild(chip);
+    });
+    if (_root.choice === 'custom') {
+      const custom = make('input', {
+        id: 'creator-root-custom', class: 'creator-root-custom', type: 'number', min: '1', max: String(max),
+        step: '1', placeholder: `1–${max}`, 'aria-label': 'Minutes',
+      });
+      custom.value = customTyped;
+      custom.addEventListener('keydown', (e) => { if (e.key === 'Enter') { e.preventDefault(); _rootEnable(); } });
+      durations.appendChild(custom);
+      durations.appendChild(make('span', { class: 'creator-root-unit', text: 'min' }));
+    }
+    const go = make('button', { type: 'button', class: 'creator-root-go', text: _root.busy ? 'Checking…' : 'Turn root on', disabled: _root.busy });
+    go.addEventListener('click', _rootEnable);
+    children.push(
+      make('div', { class: 'creator-root-row' }, [code, durations, go]),
+      make('div', { class: 'creator-root-note', text: `Root switches itself off when the time is up (at most ${max} min). Revoke switches it off at once. Nothing runs as root yet: root commands come in a later step.` }),
+    );
+  }
+  if (_root.message) children.push(make('div', { class: 'creator-root-note error', role: 'alert', text: _root.message }));
+  panel.replaceChildren(...children);
+}
+
+async function _rootEnable() {
+  if (!_root || _root.busy) return;
+  const st = _root.status || {};
+  const code = view.rootCode(byId('creator-root-code')?.value);
+  const minutes = view.rootMinutes(_root.choice, byId('creator-root-custom')?.value, st.max_minutes);
+  _root.message = !code ? 'The code is the 6 digits your authenticator app shows.' : (minutes.error || '');
+  if (_root.message) { _rootRender(); return; }
+  _root.busy = true;
+  _rootRender();
+  try {
+    const status = await api(`${API}/root/enable`, { method: 'POST', body: JSON.stringify({ code, minutes: minutes.minutes }) });
+    if (!_root) return;
+    _root.busy = false;
+    _root.message = '';
+    _rootSetStatus(status);
+  } catch (e) {
+    if (!_root) return;
+    _root.busy = false;
+    _root.message = e.message;
+    const input = byId('creator-root-code');
+    if (input) input.value = '';
+    _rootRender();
+    _rootRefresh();   // attempts left, lock
+  }
+}
+
+async function _rootRevoke() {
+  if (!_root || _root.busy) return;
+  _root.busy = true;
+  _rootRender();
+  try {
+    const status = await api(`${API}/root/revoke`, { method: 'POST' });
+    if (!_root) return;
+    _root.busy = false;
+    _root.message = '';
+    _rootSetStatus(status);
+  } catch (e) {
+    if (!_root) return;
+    _root.busy = false;
+    _root.message = `Revoke failed: ${e.message}. On the host: sudo systemctl stop creator-root-helper`;
+    _rootRender();
   }
 }
 

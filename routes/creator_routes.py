@@ -14,7 +14,7 @@ from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field
 
 from core.middleware import INTERNAL_TOOL_USER
-from src.auth_helpers import require_user
+from src.auth_helpers import is_delegated_credential, require_user
 from src.creator_mode import (
     ACTIVE_STATUSES,
     MAX_MAX_MINUTES,
@@ -283,6 +283,77 @@ def setup_creator_routes(creator_manager: CreatorManager) -> APIRouter:
         _require_creator_user(request)
         from src import creator_host_helper
         return await creator_host_helper.hello()
+
+    # ------------------------------------------------------------------
+    # The root switch (Phase 5b). The root helper on the host holds it and
+    # checks the authenticator code; these routes only pass requests on.
+    # ------------------------------------------------------------------
+
+    class RootEnableRequest(BaseModel):
+        code: str = Field(..., min_length=6, max_length=6, pattern=r"^[0-9]{6}$")
+        minutes: int = Field(..., ge=1, le=90)
+
+    def _require_root_user(request: Request) -> str:
+        """Creator privilege, plus: a logged-in admin, in a browser session.
+        Fails closed: no login (auth off), no auth manager, or an API token
+        (it resolves to an admin, but acts for someone else) is refused."""
+        user = _require_creator_user(request)
+        auth_mgr = getattr(request.app.state, "auth_manager", None)
+        if not user or auth_mgr is None:
+            raise HTTPException(403, "Root needs an admin account (log-in turned on).")
+        if is_delegated_credential(request):
+            raise HTTPException(403, "Root can't be controlled with an API token.")
+        try:
+            admin = bool(auth_mgr.is_admin(user))
+        except Exception:
+            admin = False
+        if not admin:
+            raise HTTPException(403, "Only an admin can switch root.")
+        return user
+
+    def _root_unreachable(e: Exception):
+        raise HTTPException(503, str(e))
+
+    @router.get("/api/creator/root/status")
+    async def creator_root_status(request: Request):
+        """Is root on, and until when. `installed` is false when the root
+        helper's folder isn't mounted at all (the window then shows nothing)."""
+        _require_root_user(request)
+        from src import creator_root_helper
+        return await creator_root_helper.status()
+
+    @router.post("/api/creator/root/enable")
+    async def creator_root_enable(body: RootEnableRequest, request: Request):
+        """Switch root on with a code from the authenticator app. The root
+        helper checks the code; a code works once."""
+        user = _require_root_user(request)
+        from src import creator_root_helper
+        from src.creator_host_helper import HelperError
+        try:
+            reply = await creator_root_helper.enable(body.code, body.minutes)
+        except HelperError as e:
+            _root_unreachable(e)
+        logger.info("Creator root switch: enable by %s for %s min: %s", user, body.minutes,
+                    "on" if reply.get("ok") else reply.get("reason") or "refused")
+        if not reply.get("ok"):
+            raise HTTPException(429 if reply.get("reason") == "locked" else 400,
+                                reply.get("error") or "The root helper refused.")
+        return await creator_root_helper.status()
+
+    @router.post("/api/creator/root/revoke")
+    async def creator_root_revoke(request: Request):
+        """Switch root off now. No code needed."""
+        user = _require_root_user(request)
+        from src import creator_root_helper
+        from src.creator_host_helper import HelperError
+        try:
+            reply = await creator_root_helper.revoke()
+        except HelperError as e:
+            _root_unreachable(e)
+        logger.info("Creator root switch: revoked by %s", user)
+        if not reply.get("ok"):
+            raise HTTPException(502, reply.get("error") or "The root helper refused.")
+        return await creator_root_helper.status()
 
     # ------------------------------------------------------------------
     # Secrets section. Values are write-only: no route ever returns one.

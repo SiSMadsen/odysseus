@@ -16,6 +16,7 @@ below by hand, and you can read every file first.
 | `creator-helper.service` | systemd unit: runs it as `creator`, locked down (see "What creator can do"). |
 | `50-creator-apache.rules` | polkit rule: lets `creator` start/reload/restart Apache, nothing else. |
 | `../docker/creator-helper.yml` | Compose overlay: mounts the socket folder into the container, read-only. |
+| `root_helper.py`, `creator-root-helper.service`, `../docker/creator-root-helper.yml` | The root helper (Phase 5): see "The root helper" at the end. |
 
 ## Install (as you, with sudo)
 
@@ -183,6 +184,9 @@ remove the `creator` user and the `COMPOSE_FILE` line.
   approval pause and Odysseus's own log. It can't get more than `host_exec`
   would: commands as `creator`. That's why the list above, and the helper's own
   audit log (out of the container's reach), are the real safeguards.
+  Since Phase 5a the agent's commands run as their own user (`odytools`,
+  uid 1001), so the peer check refuses them; this applies only if the tool
+  user is set up (`python -m src.tool_user --check` in the container).
 
 ## Known limits
 
@@ -203,3 +207,117 @@ remove the `creator` user and the `COMPOSE_FILE` line.
   `systemd-analyze verify`, and the rule's logic was checked against a stand-in
   for polkit, but neither has run for real. `systemd-analyze security
   creator-helper` rates the unit.
+
+# The root helper (Phase 5b)
+
+A second, separate helper that runs as **root** and holds the **root switch**:
+whether root is on, and until when. You switch it on from the Creator window
+with a 6-digit code from an authenticator app; it switches itself off after the
+time you chose (90 minutes at most), and **Revoke** switches it off at once.
+
+**In 5b it is only the switch: it runs no commands.** Root commands come later
+(5c: the watchdog, 5d: `run_as_root`), and will be refused while root is off.
+So you can install it now and try the switch safely.
+
+Why it is built this way (`docs/creator-plan.md`, Phase 5):
+- The code is checked **here, on the host**, against a key in a root-only file.
+  Odysseus never holds the key, so nothing in the container can switch root on
+  by itself. A code works once.
+- Only uid 1000 (the container's app user) may talk to it, and only through its
+  own folder. The agent's commands run as uid 1001 (Phase 5a) and are refused.
+- Root is never stored as "on": the window is kept in memory, so a restart, a
+  crash or `systemctl stop` means root is off.
+
+## Install (as you, with sudo)
+
+```sh
+# 1. The program, owned by root.
+sudo install -d -o root -g root -m 0755 /opt/creator-root
+sudo install -o root -g root -m 0644 host_helper/root_helper.py /opt/creator-root/
+
+# 2. The socket folder: root's, and the container's user (uid 1000) may pass
+#    through it to the socket, nothing more (not list it, not write to it).
+sudo install -d -o root -g root -m 0700 /srv/creator-root
+sudo setfacl -m u:1000:x /srv/creator-root
+
+# 3. The authenticator key. Prints a key and a link (and a QR code if
+#    `qrencode` is installed: sudo apt-get install qrencode). Add it to your
+#    authenticator app; it then asks for a code to check the app is right.
+sudo python3 /opt/creator-root/root_helper.py setup-totp
+
+# 4. The service.
+sudo install -o root -g root -m 0644 host_helper/creator-root-helper.service /etc/systemd/system/
+sudo systemctl daemon-reload
+sudo systemctl enable --now creator-root-helper
+systemctl status creator-root-helper
+```
+
+Then mount the socket folder into the container: add the overlay to the
+`COMPOSE_FILE` line in `.env`,
+
+```
+COMPOSE_FILE=docker-compose.yml:docker/creator-helper.yml:docker/creator-root-helper.yml
+```
+
+and rebuild: `sudo docker compose up -d --build`. Enable the overlay **after**
+step 2: if the folder doesn't exist, Docker creates it as `0755`, and the
+helper refuses to start in a folder anyone can enter (`sudo chmod 0700
+/srv/creator-root` and step 2's `setfacl` fix it).
+
+## Use it
+
+- **Creator window** (admins only): the header shows **Root: off**. Click it,
+  type the code from your app, choose 15, 30 or 60 minutes or a custom number
+  (up to 90), and **Turn root on**. The header then shows **Root on · 29:41**,
+  counting down, and **Revoke**. Five wrong codes in a row lock it for 15
+  minutes.
+- **Terminal** (the fallback, no code needed: you're already root):
+
+  ```sh
+  sudo python3 /opt/creator-root/root_helper.py status
+  sudo python3 /opt/creator-root/root_helper.py on 30
+  sudo python3 /opt/creator-root/root_helper.py off
+  ```
+
+  These use a second socket, `/run/creator-root/control.sock`, which only root
+  can use and which is never mounted into the container.
+- **New key** (a new phone, say): `sudo python3 /opt/creator-root/root_helper.py
+  setup-totp --force`. The old app entry stops working at once; no restart.
+
+The audit log: `sudo cat /var/log/creator-root/audit.jsonl`. Every connection
+(who, which request, the result), every switch on (how, for how long) and off
+(revoked or expired), and lockouts. Codes are never written, right or wrong.
+
+## Kill switch
+
+```sh
+sudo systemctl stop creator-root-helper      # root is off now
+sudo systemctl disable creator-root-helper   # and stays off after a reboot
+```
+
+Uninstall: stop and disable it; remove `/etc/systemd/system/creator-root-helper.service`,
+`/opt/creator-root`, `/srv/creator-root`, `/etc/creator-root` (the key),
+`/var/lib/creator-root` and `/var/log/creator-root`; take the overlay out of
+`COMPOSE_FILE`; delete the entry in your authenticator app.
+
+## If the window says "Root: unavailable"
+
+Hover over it, or click it: the message says which part is missing. The
+folder isn't mounted (the overlay, then rebuild); the folder is mounted but
+this user can't enter it (step 2's `setfacl`); or there's no socket
+(`systemctl status creator-root-helper`, and `journalctl -u
+creator-root-helper` for why it didn't start). No **Root** button at all
+means the folder isn't mounted, or you're not an admin.
+
+## Limits (5b)
+
+- **uid 1000 is also you on the host.** Your own programs can ask for the
+  status, revoke, and try codes (five wrong ones lock it for 15 minutes).
+  They can't switch root on without a code from your app.
+- **The 5b unit is locked down hard** (no network, no capabilities, read-only
+  system) because the helper does nothing as root yet. 5d loosens it on
+  purpose, when it runs commands.
+- **Not verified on the real system:** the unit under systemd as root, the ACL
+  through the read-only bind mount, and a code from a real authenticator app.
+  The code check passes the RFC 6238 test values, and the unit passes
+  `systemd-analyze verify`.
