@@ -153,8 +153,14 @@ How it works: the agent never receives the root password. It calls `run_as_root(
   - **The socket can't live in `data/`.** On every start, `docker/entrypoint.sh` (`repair_tree_ownership`) changes the owner of everything under `/app/data` to the container user (PUID, 1000). A `creator`-owned socket folder there would be taken over. Use a separate bind mount outside `data/`, e.g. host `/run/creator-helper`, which the entrypoint doesn't touch.
   - **The agent's bash can reach the socket directly.** The Odysseus server and the agent's bash run as the same uid (1000) in the container, so `SO_PEERCRED` can't tell them apart, and bash could talk to the helper without going through `host_exec` (skipping its approvals, protected paths and the app's audit log). A token held by the server doesn't fix it: the host's `kernel.yama.ptrace_scope` is 0, so a same-uid process can read the server's memory. The helper's own limits (fixed request types, time and output limits, its own audit log, the kill switch) are the real boundary, the same "tripwire, not a wall" situation as Phase 4. Running the agent's bash as a separate uid would close it; not decided.
 
-### 6b design: running commands on the host (DRAFT, for review, 2026-10-02)
-Nothing here is built. It's the plan for review before any code, with the decisions marked **Decide**.
+### 6b design: running commands on the host (decided 2026-10-02)
+**Decisions (2026-10-02):**
+1. **Network for host commands: allowed.** The helper still listens on nothing but its socket.
+2. **Approvals: every `host_exec` asks**, with the choice of "Allow once" or "Allow all host commands for this job" (and Deny). Its own gate, separate from the untrusted-content one: approving that one doesn't approve host commands.
+3. **Secrets in the helper's log: blanked.** Odysseus sends the values to blank (the run's known secret values) with each `run` request; the helper blanks them in its audit log.
+4. **Apache config edits and package installs: Phase 5.**
+
+The rest of this section is the design as reviewed; the decisions above replace the matching **Decide** points.
 
 **What the goal needs.** The "Purpose" section names three kinds of tasks: fix a web page, edit a config file, install a package. On this host that means Apache 2 serving `/var/www/html` (`index.html` owned by you; `images/` by root), its config in `/etc/apache2`, and Debian packages. PostgreSQL 15 and Docker also run here. Nothing needs them yet.
 
