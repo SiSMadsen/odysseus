@@ -350,6 +350,19 @@ So 6b on its own covers "fix a web page" end to end (edit, reload, check, read t
 - [x] Secrets screen (done in Phase 4: Settings > Secrets).
 - Not shown live: the model's own text between tool calls. The engine drops text deltas; only `PROGRESS:` notes, tool calls, pauses and the report reach the event log. Adding a per-round text event is possible later if the window feels too quiet.
 
+## Phase 9: Upkeep script, memory and skills (decided 2026-10-03)
+Asked for after Phase 5: one script that applies and checks everything, and Creator jobs that remember (shared with chat) and learn skills, so each job isn't a fresh, untailored start.
+
+**Decisions (2026-10-03):**
+1. **Upkeep script: apply and check, no `git pull`.** It installs the helpers from the folder when they've changed (restarting only what changed), rebuilds, runs every check, and ends with a PASS/FAIL summary. Getting new code stays a separate step.
+2. **Memory after a job: a summary plus facts.** One short memory per job (date, task, outcome, what changed) and durable facts pulled from the report by the extractor chat uses. Secrets blanked. Shared with chat (the same memory store, your owner).
+3. **Chat can read Creator jobs:** memory as above, plus a read-only tool in normal chat that lists your Creator jobs and reads a job's report. It can't start, approve or stop jobs.
+4. **Skills from Creator jobs follow the Skills settings:** learned as drafts after a successful job, used like any learned skill (Brain > Skills: auto-approve and its confidence), marked as learned from Creator.
+
+- [ ] **9a. Upkeep script.**
+- [ ] **9b. Memory in and out of Creator jobs, and the chat tool.**
+- [ ] **9c. Skills: matched on the task, learned from jobs.**
+
 ## Polishing (once we're done)
 Not needed for Creator to work; worth doing once the phases are finished.
 - [x] **Export the report.** Two buttons on a finished job's report in the Creator window, both straight downloads, named `creator-<job id>-<day>.md` / `.pdf`. **Download .md**: the report exactly as written. **Download .pdf**: the rendered report through `static/lib/html2pdf.bundle.min.js`, the library the document editor already uses for its PDF export, loaded on first use; black on white whatever the theme, long command lines wrapped, A4. Like the editor's, the PDF is an image of the page (text isn't selectable). First version printed through the browser's print dialog instead; changed on request (2026-10-02: "I just want it to download the pdf"). Tested: the filename with node; both buttons with jsdom checks (Markdown content and name; the PDF options, content and error message, with a stand-in for the library). Not tried: the real library here (no browser on the host).
