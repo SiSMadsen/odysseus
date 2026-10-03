@@ -224,6 +224,17 @@ def setup_creator_routes(creator_manager: CreatorManager) -> APIRouter:
         # with an approval, as an extra note to the agent.
         answer: Optional[str] = Field(default=None, max_length=10_000)
 
+    @router.post("/api/creator/learn-skill/{job_id}")
+    async def creator_learn_skill(job_id: str, request: Request):
+        """Learn a skill from one of your finished jobs, now. Says why not
+        when it doesn't (the model declined, too unsure, a duplicate...)."""
+        user = _require_creator_user(request)
+        job = _owned_job(job_id, user)
+        if job["status"] != "done":
+            raise HTTPException(400, "Only a finished job can teach a skill.")
+        ep_url, ep_model, ep_headers = _resolve_creator_endpoint(user, None, None)
+        return await creator_manager.learn_skill(job_id, ep_url, ep_model, ep_headers)
+
     @router.post("/api/creator/resume/{job_id}")
     async def creator_resume(job_id: str, body: CreatorResumeRequest, request: Request):
         """Answer or approve a paused job so it continues."""

@@ -990,6 +990,24 @@ class CreatorManager:
             views.append(view)
         return views
 
+    async def learn_skill(self, job_id: str, endpoint_url: str, model: str, headers: dict) -> dict:
+        """"Learn a skill" on a finished job (the button): the same extraction
+        as at the end of a job, on demand, whatever the auto-skills setting.
+        {"skill", "status", "note"}; the outcome goes in the job's audit log."""
+        if self._memory is None or getattr(self._memory, "skills_manager", None) is None:
+            return {"skill": None, "note": "skills aren't available"}
+        job = self.get_job(job_id) or {}
+        report = (job.get("state") or {}).get("report")
+        if not report:
+            return {"skill": None, "note": "this job has no report to learn from"}
+        out = await self._memory.learn_skill(job_id, job.get("owner") or "", report, endpoint_url, model, headers)
+        try:
+            AuditLog(job_id, Redactor(), self._audit_directory).write(
+                {"at": _now_iso(), "type": "skill_learned", "by": "button", **out})
+        except Exception:
+            logger.debug("Creator: could not log the learned skill", exc_info=True)
+        return out
+
     def _root_gate(self, content, live: Optional[dict] = None) -> Optional[str]:
         """Whether a run_as_root call pauses: when root is off (you switch it
         on, then approve), or when the watchdog says it needs approval.

@@ -592,6 +592,28 @@ function _renderHead() {
     followUp.addEventListener('click', () => showNewJob({ id: status.job_id, task: status.task }));
     sub.appendChild(followUp);
   }
+  if (status.status === 'done') {
+    // Learn a skill from this job now, and see why not if it doesn't (9e).
+    const learn = make('button', {
+      type: 'button', class: 'creator-follow-up-btn', text: 'Learn a skill',
+      title: 'Turn what this job did into a reusable skill (Brain > Skills). Says why when it doesn\'t.',
+    });
+    const msg = make('span', { id: 'creator-learn-msg', class: 'creator-job-meta', role: 'status' });
+    learn.addEventListener('click', async () => {
+      learn.disabled = true;
+      msg.textContent = 'Learning…';
+      try {
+        const out = await api(`${API}/learn-skill/${encodeURIComponent(status.job_id)}`, { method: 'POST' });
+        msg.textContent = out.skill ? `Skill "${out.skill}" ${out.note}.` : `No skill: ${out.note}.`;
+      } catch (e) {
+        msg.textContent = e.message;
+      } finally {
+        learn.disabled = false;
+      }
+    });
+    sub.appendChild(learn);
+    sub.appendChild(msg);
+  }
   if (active) {
     sub.appendChild(make('span', { id: 'creator-time-left', class: 'creator-time-left' }));
     sub.appendChild(make('span', { id: 'creator-live-state', class: 'creator-live-state', role: 'status' }));

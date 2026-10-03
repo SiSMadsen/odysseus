@@ -522,3 +522,50 @@ def test_other_cards_show_no_files():
         done({ shown: h.visible(env.byId('creator-reply-files')), n: env.$$('#creator-reply-files details').length });
     """)
     assert out == {"shown": False, "n": 0}
+
+
+def test_learn_a_skill_says_what_happened():
+    out = _run("""
+        const finished = job({ status: 'done', has_report: true, finished_at: '2026-10-03T10:00:00Z' });
+        let reply = { skill: 'install-a-root-script', status: 'draft', note: 'saved as draft' };
+        const env = h.setup({ routes: {
+          'GET /api/model-endpoints': [],
+          'GET /api/creator/jobs?limit=100': { jobs: [listed(finished)] },
+          [`GET /api/creator/status/${JOB}?since=0`]: finished,
+          [`GET /api/creator/report/${JOB}`]: { report: '# Report' },
+          [`POST /api/creator/learn-skill/${JOB}`]: () => reply,
+        } });
+        const panel = await env.loadPanel();
+        panel.openPanel();
+        await env.settle();
+        await panel.selectJob(JOB);
+        await env.settle();
+        const head = env.buttons('#creator-job-head');
+        env.clickButton('Learn a skill', '#creator-job-head');
+        await env.settle();
+        const saved = env.text('#creator-learn-msg');
+        reply = { skill: null, note: 'declined: a one-off check, nothing to reuse' };
+        env.clickButton('Learn a skill', '#creator-job-head');
+        await env.settle();
+        done({ head, saved, declined: env.text('#creator-learn-msg') });
+    """)
+    assert "Learn a skill" in out["head"] and "Follow up" in out["head"]
+    assert out["saved"] == 'Skill "install-a-root-script" saved as draft.'
+    assert out["declined"] == "No skill: declined: a one-off check, nothing to reuse."
+
+
+def test_no_learn_button_on_a_job_that_did_not_finish():
+    out = _run("""
+        const stopped = job({ status: 'stopped', finished_at: '2026-10-03T10:00:00Z' });
+        const env = h.setup({ routes: {
+          'GET /api/model-endpoints': [], 'GET /api/creator/jobs?limit=100': { jobs: [listed(stopped)] },
+          [`GET /api/creator/status/${JOB}?since=0`]: stopped,
+        } });
+        const panel = await env.loadPanel();
+        panel.openPanel();
+        await env.settle();
+        await panel.selectJob(JOB);
+        await env.settle();
+        done({ head: env.buttons('#creator-job-head') });
+    """)
+    assert "Learn a skill" not in out["head"] and "Follow up" in out["head"]

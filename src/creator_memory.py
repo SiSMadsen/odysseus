@@ -90,6 +90,31 @@ def knowledge_prompt(facts: bool) -> str:
 # Kept for callers that only want facts.
 FACTS_SYSTEM_PROMPT = knowledge_prompt(True)
 
+SKILL_MIN_CONFIDENCE = 0.6
+SKILL_CATEGORY = "creator"
+SKILL_SYSTEM_PROMPT = (
+    "You read the full report of a FINISHED admin job an AI agent (Creator) ran "
+    "on the user's own server: the task, what was done, the exact commands "
+    "(with which ran as root and which needed the user's approval), what "
+    "failed and how it was fixed.\n\n"
+    "Decide whether it shows a REUSABLE method for similar jobs on this "
+    "machine. Generalise the specific task into the method behind it (e.g. "
+    "\"Install a root script and run it from cron\", \"Add a page to the web "
+    "root and link it from the main page\"), keeping the machine's real paths "
+    "and tools.\n\n"
+    "If it does, return ONE JSON object:\n"
+    '{"name": "<under 10 words>", "description": "<one sentence>", '
+    '"when_to_use": "<one sentence>", "procedure": ["<3-8 concrete steps: tools, '
+    'paths, which run as creator with host_exec and which as root with '
+    'run_as_root, staging files in /srv/creator-helper/work, testing as creator '
+    'before installing as root>"], "pitfalls": ["<what went wrong here and how '
+    'to avoid it>"], "verification": ["<how to check it worked>"], '
+    '"tags": ["<3-5 keywords>"], "confidence": <0.0-1.0: how reliable and reusable>}\n'
+    "If it doesn't (a one-off, nothing transferable, the job barely did "
+    'anything), return {"skip": "<one short reason>"}.\n'
+    "Never include passwords, tokens or keys. Only JSON, no fences."
+)
+
 
 def _prefs(owner: Optional[str]) -> dict:
     try:
@@ -150,19 +175,6 @@ def report_text(report: Dict[str, Any]) -> str:
     if report.get("failures"):
         parts.append("Repeated failures:\n" + "\n".join(f"- {f}" for f in report["failures"][:10]))
     return "\n\n".join(parts)[:EXTRACT_REPORT_CHARS]
-
-
-class _JobTranscript:
-    """Just enough of a chat session for chat's skill extractor."""
-
-    def __init__(self, job_id: str, owner: Optional[str], task: str, text: str):
-        self.session_id = job_id
-        self.owner = owner
-        self._messages = [{"role": "user", "content": task},
-                          {"role": "assistant", "content": text}]
-
-    def get_context_messages(self):
-        return list(self._messages)
 
 
 class CreatorMemory:
@@ -258,14 +270,23 @@ class CreatorMemory:
                     out["facts"], out["lessons"] = facts, lessons
                 except Exception:
                     logger.warning("Creator: fact/lesson extraction failed", exc_info=True)
-        if (self.skills_manager is not None and report.get("status") == "done"
-                and prefs.get("auto_skills", True)
-                and (tool_calls >= SKILL_MIN_COMMANDS or rounds >= 2)):
+        # Why a job leaves no skill is always recorded (the audit log's
+        # `remembered` line), so "none" can be told apart from a bug.
+        if self.skills_manager is None:
+            out["skill_note"] = "skills aren't available"
+        elif report.get("status") != "done":
+            out["skill_note"] = "only finished jobs teach skills"
+        elif not prefs.get("auto_skills", True):
+            out["skill_note"] = "auto skills is off in your preferences"
+        elif tool_calls < SKILL_MIN_COMMANDS and rounds < 2:
+            out["skill_note"] = "too few steps to be a procedure"
+        else:
             try:
-                out["skill"] = await self.extract_skill(job_id, owner, report, endpoint_url, model, headers,
-                                                        tool_calls, rounds)
-            except Exception:
+                learned = await self.learn_skill(job_id, owner, report, endpoint_url, model, headers)
+                out["skill"], out["skill_note"] = learned["skill"], learned["note"]
+            except Exception as e:
                 logger.warning("Creator: skill extraction failed", exc_info=True)
+                out["skill_note"] = f"failed: {str(e)[:200]}"
         return out
 
     def _task_endpoint(self, endpoint_url, model, headers, owner):
@@ -346,15 +367,74 @@ class CreatorMemory:
         return facts
 
     async def extract_skill(self, job_id, owner, report, endpoint_url, model, headers,
-                            tool_calls: int, rounds: int) -> Optional[str]:
-        from services.memory.skill_extractor import maybe_extract_skill
+                            tool_calls: int = 0, rounds: int = 0) -> Optional[str]:
+        """The skill's name, or None. Why not is in learn_skill's note."""
+        return (await self.learn_skill(job_id, owner, report, endpoint_url, model, headers))["skill"]
+
+    async def learn_skill(self, job_id, owner, report, endpoint_url, model, headers) -> Dict[str, Any]:
+        """Learn a skill from a finished job's whole report. Returns
+        {"skill": name or None, "status": "published"/"draft", "note": why},
+        so a job that leaves no skill says why (it declined, too unsure, a
+        duplicate, the model failed). Chat's extractor isn't used: it cuts
+        each message at 500 characters, which left it only the task."""
+        from services.memory.skill_extractor import _extract_json_object, _has_duplicate_title
+        from src.llm_core import llm_call_async
         url, mdl, hdrs = self._task_endpoint(endpoint_url, model, headers, owner)
-        transcript = _JobTranscript(job_id, owner, report.get("asked") or "", report_text(report))
-        entry = await maybe_extract_skill(
-            transcript, self.skills_manager, url, mdl, hdrs,
-            max(rounds, 2), tool_calls, owner=owner or None, source=SKILL_SOURCE,
+        if not url or not mdl:
+            return {"skill": None, "note": "no model to ask"}
+        try:
+            raw = await llm_call_async(url, mdl, [
+                {"role": "system", "content": SKILL_SYSTEM_PROMPT},
+                {"role": "user", "content": "Job report:\n\n" + report_text(report)
+                 + "\n\nReturn the JSON object now."},
+            ], temperature=0.1, max_tokens=4096, headers=hdrs)
+        except Exception as e:
+            return {"skill": None, "note": f"the model call failed: {str(e)[:200]}"}
+        try:
+            from src.text_helpers import strip_think
+            raw = strip_think(raw or "", prose=True, prompt_echo=True)
+        except Exception:
+            pass
+        data = _extract_json_object(raw or "")
+        if not isinstance(data, dict):
+            return {"skill": None, "note": "the model's answer had no JSON object: " + (raw or "")[:160]}
+        if data.get("skip"):
+            return {"skill": None, "note": f"declined: {str(data['skip'])[:200]}"}
+        name = str(data.get("name") or "").strip()
+        procedure = [str(x) for x in (data.get("procedure") or []) if str(x).strip()]
+        if not name or len(procedure) < 2:
+            return {"skill": None, "note": "the model's skill had no name or too few steps"}
+        try:
+            confidence = float(data.get("confidence", 0.7))
+        except (TypeError, ValueError):
+            confidence = 0.7
+        if confidence < SKILL_MIN_CONFIDENCE:
+            return {"skill": None, "note": f"too unsure ({confidence:.2f} < {SKILL_MIN_CONFIDENCE})",
+                    "name": name}
+        from services.memory.skills import slugify
+        existing = self.skills_manager.load(owner=owner or None)
+        if _has_duplicate_title(existing, name) or any(sk.get("name") == slugify(name) for sk in existing):
+            return {"skill": None, "note": f"a skill called {name!r} already exists"}
+        status = "published" if _prefs(owner).get("auto_approve_skills", True) else "draft"
+        entry = self.skills_manager.add_skill(
+            name=name,
+            description=str(data.get("description") or "").strip(),
+            when_to_use=str(data.get("when_to_use") or "").strip(),
+            procedure=procedure,
+            pitfalls=[str(x) for x in (data.get("pitfalls") or []) if str(x).strip()],
+            verification=[str(x) for x in (data.get("verification") or []) if str(x).strip()],
+            tags=[str(x) for x in (data.get("tags") or [])][:8],
+            source=SKILL_SOURCE, confidence=confidence, session_id=job_id,
+            owner=owner or None, category=SKILL_CATEGORY, status=status,
         )
-        return (entry or {}).get("name") or (entry or {}).get("id")
+        if entry.get("_deduped"):
+            return {"skill": None, "note": f"nearly the same as the existing skill {entry.get('_duplicate_of')!r}"}
+        try:
+            from src.event_bus import fire_event
+            fire_event("skill_added", owner or None)
+        except Exception:
+            pass
+        return {"skill": entry.get("name"), "status": status, "note": f"saved as {status}"}
 
 
 # ---------------------------------------------------------------------------

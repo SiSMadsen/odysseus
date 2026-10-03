@@ -150,39 +150,132 @@ def test_after_job_follows_the_owners_preferences(monkeypatch, prefs, store):
     assert len(calls) == 1                                    # did nothing: nothing to learn
 
 
-def test_a_skill_is_learned_from_a_finished_job_and_marked_creator(monkeypatch, prefs, tmp_path):
+SKILL_JSON = {
+    "name": "Install a root script and run it from cron",
+    "description": "Stage a script, test it as creator, install it as root and schedule it.",
+    "when_to_use": "A periodic job that needs root, e.g. regenerating a status page.",
+    "procedure": ["Write the script in /srv/creator-helper/work with host_exec",
+                  "Run it as creator with output in the work folder and check it",
+                  "run_as_root: install -m 755 /srv/creator-helper/work/x /usr/local/bin/x",
+                  "run_as_root: install the cron file into /etc/cron.d"],
+    "pitfalls": ["goaccess -o needs a file name ending in .html"],
+    "verification": ["curl the page and expect 200"],
+    "tags": ["cron", "root", "script"], "confidence": 0.85,
+}
+
+
+def _skills(tmp_path, name="skills"):
     from services.memory.skills import SkillsManager
-    _llm(monkeypatch, json.dumps({
-        "title": "Install a Debian package as root with Creator", "problem": "p", "solution": "s",
-        "steps": ["run_as_root apt-get install -y <pkg>", "check with dpkg-query -W <pkg>", "report the version"],
-        "tags": ["apt", "debian", "install"], "confidence": 0.9}))
-    skills = SkillsManager(str(tmp_path / "skills"))
-    mem = CreatorMemory(skills_manager=skills)
+    return SkillsManager(str(tmp_path / name))
+
+
+def test_a_skill_is_learned_from_the_whole_report_and_marked_creator(monkeypatch, prefs, tmp_path):
+    calls = _llm(monkeypatch, json.dumps(SKILL_JSON))
+    skills = _skills(tmp_path)
     prefs.update(auto_approve_skills=False)
-    out = asyncio.run(mem.after_job("cr-1", "alice", REPORT_DATA, "http://x", "m", {}, tool_calls=2, rounds=1))
-    learned = skills.load(owner="alice")
-    assert out["skill"] and len(learned) == 1
-    assert learned[0]["source"] == "creator" and learned[0]["status"] == "draft"
-    # Too few steps, or not finished: nothing to learn.
-    skills2 = SkillsManager(str(tmp_path / "skills2"))
-    mem2 = CreatorMemory(skills_manager=skills2)
-    asyncio.run(mem2.after_job("cr-2", "alice", REPORT_DATA, "http://x", "m", {}, tool_calls=1, rounds=1))
-    asyncio.run(mem2.after_job("cr-3", "alice", {**REPORT_DATA, "status": "stopped"}, "http://x", "m", {},
-                               tool_calls=5, rounds=3))
-    prefs.update(auto_skills=False)
-    asyncio.run(mem2.after_job("cr-4", "alice", REPORT_DATA, "http://x", "m", {}, tool_calls=5, rounds=3))
-    assert skills2.load(owner="alice") == []
+    out = asyncio.run(CreatorMemory(skills_manager=skills).after_job(
+        "cr-1", "alice", STATUS_REPORT, "http://x", "m", {}, tool_calls=4, rounds=1))
+    assert out["skill"] and out["skill_note"] == "saved as draft"
+    learned = skills.load(owner="alice")[0]
+    assert learned["source"] == "creator" and learned["status"] == "draft" and learned["category"] == "creator"
+    assert learned["pitfalls"] == ["goaccess -o needs a file name ending in .html"]
+    assert learned["procedure"][2].startswith("run_as_root: install")
+    # The model saw the whole report, commands and effort included (chat's
+    # extractor cut it to 500 characters, which left only the task).
+    sent = calls[0]["messages"][1]["content"]
+    assert "Commands:" in sent and "Effort:" in sent and len(sent) > 600
 
 
 def test_auto_approve_publishes_creator_skills_like_any_other(monkeypatch, prefs, tmp_path):
-    from services.memory.skills import SkillsManager
-    _llm(monkeypatch, json.dumps({"title": "Reload Apache after an edit", "steps": ["a", "b", "c"],
-                                  "tags": ["apache"], "confidence": 0.9}))
-    skills = SkillsManager(str(tmp_path / "skills"))
+    _llm(monkeypatch, json.dumps(SKILL_JSON))
+    skills = _skills(tmp_path)
     prefs.update(auto_approve_skills=True)
-    asyncio.run(CreatorMemory(skills_manager=skills).after_job(
-        "cr-1", "alice", REPORT_DATA, "http://x", "m", {}, tool_calls=3))
-    assert skills.load(owner="alice")[0]["status"] == "published"
+    out = asyncio.run(CreatorMemory(skills_manager=skills).after_job(
+        "cr-1", "alice", STATUS_REPORT, "http://x", "m", {}, tool_calls=3))
+    assert out["skill_note"] == "saved as published" and skills.load(owner="alice")[0]["status"] == "published"
+
+
+@pytest.mark.parametrize("reply, note", [
+    ({"skip": "a one-off check, nothing to reuse"}, "declined: a one-off check, nothing to reuse"),
+    ({**SKILL_JSON, "confidence": 0.3}, "too unsure (0.30 < 0.6)"),
+    ({**SKILL_JSON, "procedure": ["only one step"]}, "the model's skill had no name or too few steps"),
+    ("Sorry, I can't do that.", "the model's answer had no JSON object: Sorry, I can't do that."),
+])
+def test_why_no_skill_is_always_said(monkeypatch, prefs, tmp_path, reply, note):
+    _llm(monkeypatch, reply if isinstance(reply, str) else json.dumps(reply))
+    skills = _skills(tmp_path)
+    out = asyncio.run(CreatorMemory(skills_manager=skills).after_job(
+        "cr-1", "alice", STATUS_REPORT, "http://x", "m", {}, tool_calls=4))
+    assert out["skill"] is None and out["skill_note"] == note and skills.load(owner="alice") == []
+
+
+def test_duplicates_and_the_gates_say_why_too(monkeypatch, prefs, tmp_path):
+    _llm(monkeypatch, json.dumps(SKILL_JSON))
+    skills = _skills(tmp_path)
+    mem = CreatorMemory(skills_manager=skills)
+    asyncio.run(mem.after_job("cr-1", "alice", STATUS_REPORT, "http://x", "m", {}, tool_calls=4))
+    again = asyncio.run(mem.after_job("cr-2", "alice", STATUS_REPORT, "http://x", "m", {}, tool_calls=4))
+    assert again["skill"] is None and "already exists" in again["skill_note"]
+    renamed = {**SKILL_JSON, "name": "Install a root script and run it from cron jobs"}
+    _llm(monkeypatch, json.dumps(renamed))
+    near = asyncio.run(mem.after_job("cr-3", "alice", STATUS_REPORT, "http://x", "m", {}, tool_calls=4))
+    assert near["skill"] is None and "nearly the same as the existing skill" in near["skill_note"]
+    assert len(skills.load(owner="alice")) == 1
+    for report, kw, note in (
+        ({**STATUS_REPORT, "status": "stopped"}, {"tool_calls": 9}, "only finished jobs teach skills"),
+        (STATUS_REPORT, {"tool_calls": 1, "rounds": 1}, "too few steps to be a procedure"),
+    ):
+        assert asyncio.run(mem.after_job("cr-4", "alice", report, "u", "m", {}, **kw))["skill_note"] == note
+    prefs.update(auto_skills=False)
+    assert asyncio.run(mem.after_job("cr-5", "alice", STATUS_REPORT, "u", "m", {}, tool_calls=9))["skill_note"] \
+        == "auto skills is off in your preferences"
+
+
+def test_learn_a_skill_on_demand_from_a_finished_job(monkeypatch, prefs, session_factory, tmp_path):
+    _llm(monkeypatch, json.dumps(SKILL_JSON))
+    skills = _skills(tmp_path)
+    prefs.update(auto_skills=False)   # the button works whatever the setting
+
+    async def run():
+        mgr = CreatorManager(session_factory=session_factory, agent_loop=scripted([[("text", REPORT)]], []),
+                             memory=CreatorMemory(skills_manager=skills))
+        job_id = mgr.start_job("Build a status page", "u", "m", owner="alice")
+        await _wait_finished(mgr, job_id)
+        return job_id, await mgr.learn_skill(job_id, "http://x", "m", {})
+
+    job_id, out = asyncio.run(run())
+    assert out["skill"] and out["note"] == "saved as published"
+    log = [json.loads(line) for line in (tmp_path / "audit" / f"{job_id}.jsonl").read_text().splitlines()]
+    assert any(e["type"] == "skill_learned" and e["by"] == "button" and e["skill"] == out["skill"] for e in log)
+
+
+def test_the_learn_skill_route_is_for_your_finished_jobs(monkeypatch):
+    from fastapi import HTTPException
+    from routes import creator_routes
+    seen = []
+
+    class Mgr:
+        def get_job(self, job_id):
+            return {"id": job_id, "owner": "alice", "status": {"cr-000000000001": "done"}.get(job_id, "stopped")}
+
+        async def learn_skill(self, job_id, url, model, headers):
+            seen.append((job_id, url, model))
+            return {"skill": "x", "status": "draft", "note": "saved as draft"}
+
+    monkeypatch.setattr(creator_routes, "require_user", lambda r: r.state.current_user)
+    monkeypatch.setattr(creator_routes, "_resolve_creator_endpoint", lambda u, e, m: ("http://x", "m", {}))
+    router = creator_routes.setup_creator_routes(Mgr())
+    route = next(r.endpoint for r in router.routes if getattr(r, "path", "") == "/api/creator/learn-skill/{job_id}")
+    req = lambda user: SimpleNamespace(state=SimpleNamespace(current_user=user), headers={},
+                                       app=SimpleNamespace(state=SimpleNamespace(auth_manager=None)))
+    assert asyncio.run(route(job_id="cr-000000000001", request=req("alice")))["skill"] == "x"
+    assert seen == [("cr-000000000001", "http://x", "m")]
+    with pytest.raises(HTTPException) as exc:
+        asyncio.run(route(job_id="cr-000000000002", request=req("alice")))   # not finished
+    assert exc.value.status_code == 400
+    with pytest.raises(HTTPException) as exc:
+        asyncio.run(route(job_id="cr-000000000001", request=req("bob")))     # not yours
+    assert exc.value.status_code == 404
 
 
 def test_after_job_never_raises(monkeypatch, prefs):
