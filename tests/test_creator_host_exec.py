@@ -433,3 +433,40 @@ def test_report_marks_commands_run_under_allow_all(session_factory):
     assert cmds[1].get("allowed_all") is True
     assert "`uptime` — ok (allowed: all host commands)" in job["report"]
     assert "`systemctl reload apache2` — ok (approved by you)" in job["report"]
+
+
+def test_allow_all_host_commands_up_front(session_factory, tmp_path):
+    """The composer's "Allow all host commands up front": host_exec doesn't
+    ask, from the first command. It's its own choice: it lifts neither the
+    untrusted-content gate nor protected paths. (Asked for after the 5b live
+    test, where "approve untrusted up front" still asked at the first host
+    command.)"""
+    calls = []
+
+    async def run():
+        mgr = CreatorManager(session_factory=session_factory, agent_loop=scripted([], calls),
+                             host_helper=FakeHelper())
+        job_id = mgr.start_job("t", "u", "m", protected_paths=["/etc"], approve_host=True)
+        await _wait_finished(mgr, job_id)
+        return mgr.get_job(job_id), job_id
+
+    job, job_id = asyncio.run(run())
+    check, approved = calls[0]["protected_action_check"], calls[0]["caller_approved_check"]
+    assert check(HOST_EXEC_TOOL, HOST_CMD) is None
+    assert approved(HOST_EXEC_TOOL, HOST_CMD) is True
+    assert approved("bash", "ls") is False                 # not the untrusted gate
+    assert "protected path /etc" in check(HOST_EXEC_TOOL, '{"command": "cat /etc/hosts"}')
+    assert any(n["text"].startswith("All host commands are allowed for this job") for n in job["state"]["notes"])
+    start = json.loads((tmp_path / "audit" / f"{job_id}.jsonl").read_text().splitlines()[0])
+    assert start["approve_host"] is True and start["approve_untrusted"] is False
+
+
+def test_allow_all_host_up_front_says_nothing_without_the_helper(session_factory):
+    async def run():
+        mgr = CreatorManager(session_factory=session_factory, agent_loop=scripted([], []))
+        job_id = mgr.start_job("t", "u", "m", approve_host=True)
+        await _wait_finished(mgr, job_id)
+        return mgr.get_job(job_id)
+
+    job = asyncio.run(run())
+    assert not any("host commands" in n["text"] for n in job["state"]["notes"])

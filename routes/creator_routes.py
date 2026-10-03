@@ -125,6 +125,10 @@ def setup_creator_routes(creator_manager: CreatorManager) -> APIRouter:
         # check during this run. Off by default. Protected paths and the
         # secret switch still apply.
         approve_untrusted: bool = False
+        # "Allow all host commands for this job" given up front: host_exec
+        # doesn't ask before each command. Off by default; protected paths
+        # still ask every time.
+        approve_host: bool = False
         # Follow up on an earlier job of yours that has ended: the new job is
         # given that job's task and report before its own task.
         follow_up_of: Optional[str] = None
@@ -160,6 +164,7 @@ def setup_creator_routes(creator_manager: CreatorManager) -> APIRouter:
                 max_minutes=body.max_minutes,
                 protected_paths=protected_paths_from_settings(),
                 approve_untrusted=body.approve_untrusted,
+                approve_host=body.approve_host,
                 follow_up=earlier,
             )
         except CreatorBusyError as e:
@@ -172,6 +177,7 @@ def setup_creator_routes(creator_manager: CreatorManager) -> APIRouter:
             "model": ep_model,
             "max_minutes": job.get("max_minutes"),
             "approve_untrusted": body.approve_untrusted,
+            "approve_host": body.approve_host,
             "follow_up_of": earlier["id"] if earlier else None,
         }
 

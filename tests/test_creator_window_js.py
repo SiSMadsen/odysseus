@@ -336,3 +336,10 @@ def test_follow_up_button_sends_follow_up_of():
     assert "if (_followUp) body.follow_up_of = _followUp.id;" in src
     # "+ New job" starts a plain job (not the click event as a follow-up).
     assert "newBtn.addEventListener('click', () => showNewJob());" in src
+
+
+def test_allow_all_host_commands_up_front_checkbox():
+    src = _PANEL.read_text()
+    assert "id: 'creator-approve-host', type: 'checkbox'" in src
+    assert "approve_host: !!byId('creator-approve-host')?.checked," in src
+    assert "text: 'Allow all host commands up front'" in src

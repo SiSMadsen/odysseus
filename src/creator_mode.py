@@ -693,11 +693,16 @@ class CreatorManager:
         max_minutes: Optional[int] = None,
         protected_paths: Optional[List[str]] = None,
         approve_untrusted: bool = False,
+        approve_host: bool = False,
         follow_up: Optional[dict] = None,
     ) -> str:
         """`approve_untrusted` is "approve_job" given up front: the untrusted-
         content gate is lifted for the whole run, so it doesn't pause at its
         first command. Protected paths and the secret switch still apply.
+        `approve_host` is "Allow all host commands for this job" given up
+        front: host_exec doesn't ask before each command. It's a separate
+        gate from the untrusted one (6b decision 2), so it's a separate choice;
+        protected paths still ask.
         `follow_up` is an earlier finished job of the same owner (get_job's
         dict): the new job is given its task and report before its own task."""
         # One job at a time; a paused job still holds its task, so it counts.
@@ -741,6 +746,7 @@ class CreatorManager:
             "task": task, "model": model, "max_minutes": minutes,
             "protected_paths": list(protected_paths),
             "approve_untrusted": bool(approve_untrusted),
+            "approve_host": bool(approve_host),
             "follow_up_of": (follow_up or {}).get("id"),
         })
         from datetime import timedelta
@@ -764,7 +770,7 @@ class CreatorManager:
             "follow_up_of": (follow_up or {}).get("id"),
             "follow_up_task": (follow_up or {}).get("task") or "",
             # Phase 6b: set at job start when the host helper answers.
-            "host_available": False, "host_all_approved": False,
+            "host_available": False, "host_all_approved": bool(approve_host),
         }
         live = self._live[job_id]
 
@@ -1340,6 +1346,9 @@ class CreatorManager:
                          + ", ".join(live["user_protected_paths"])
                          + ". Each action touching one asks you, every time.", "auto")
             await probe_host()
+            if live["host_available"] and live["host_all_approved"]:
+                add_note("All host commands are allowed for this job (chosen at start): "
+                         "host_exec won't ask before each one.", "auto")
             messages = [
                 {"role": "system", "content": system_prompt()},
                 {"role": "user", "content": prompt_task},

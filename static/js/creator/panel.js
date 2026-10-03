@@ -250,7 +250,8 @@ function _buildComposer() {
   model.addEventListener('change', _saveModelChoice);
   _loadEndpoints(saved);
   const untrusted = make('input', { id: 'creator-approve-untrusted', type: 'checkbox' });
-  // Deliberately not remembered: it's a per-run decision.
+  const host = make('input', { id: 'creator-approve-host', type: 'checkbox' });
+  // Deliberately not remembered: they're per-run decisions.
   const startBtn = make('button', { id: 'creator-start-btn', type: 'button', class: 'creator-start-btn', text: 'Start' });
   startBtn.addEventListener('click', _handleStart);
   task.addEventListener('keydown', (e) => {
@@ -270,6 +271,9 @@ function _buildComposer() {
       ]),
       make('label', { class: 'creator-option', title: 'Approve actions that follow untrusted content (command output, web pages) for this whole run, instead of pausing at the first one. Protected paths and secret switches still apply.' }, [
         untrusted, make('span', { text: 'Approve untrusted actions up front' }),
+      ]),
+      make('label', { class: 'creator-option', title: 'Run commands on the host (host_exec) without asking before each one, for this whole run. Only matters when the host helper is connected. Protected paths still ask every time.' }, [
+        host, make('span', { text: 'Allow all host commands up front' }),
       ]),
       make('span', { id: 'creator-composer-msg', class: 'creator-composer-msg', role: 'status' }),
       startBtn,
@@ -461,7 +465,11 @@ async function _handleStart() {
   const task = (taskEl?.value || '').trim();
   if (!task) { _setComposerMessage('Write a task first.', true); taskEl?.focus(); return; }
   const minutesRaw = (byId('creator-max-minutes')?.value || '').trim();
-  const body = { task, approve_untrusted: !!byId('creator-approve-untrusted')?.checked };
+  const body = {
+    task,
+    approve_untrusted: !!byId('creator-approve-untrusted')?.checked,
+    approve_host: !!byId('creator-approve-host')?.checked,
+  };
   if (minutesRaw) {
     const n = parseInt(minutesRaw, 10);
     if (!Number.isFinite(n) || n < 1 || n > 1440) {
@@ -485,6 +493,8 @@ async function _handleStart() {
     _draftTask = '';
     const untrusted = byId('creator-approve-untrusted');
     if (untrusted) untrusted.checked = false;
+    const host = byId('creator-approve-host');
+    if (host) host.checked = false;
     _followUp = null;
     _renderFollowUp();
     _setComposerMessage('');

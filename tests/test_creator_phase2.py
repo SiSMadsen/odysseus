@@ -473,7 +473,7 @@ def test_start_route_passes_approve_untrusted(session_factory, monkeypatch):
 
     async def run():
         out = await start(body=SimpleNamespace(task="t", endpoint_id=None, model=None, max_minutes=None,
-                                               approve_untrusted=True, follow_up_of=None), request=_request("alice"))
+                                               approve_untrusted=True, approve_host=False, follow_up_of=None), request=_request("alice"))
         await _wait_finished(mgr, out["job_id"])
         return out
 
