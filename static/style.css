@@ -41685,3 +41685,9 @@ body.settings-sidebar-resize-active {
   flex-shrink: 0; padding: 0 4px; border: none; background: none; cursor: pointer; color: var(--fg); opacity: 0.6; font: inherit;
 }
 .creator-follow-up-clear:hover { opacity: 1; }
+
+/* Root approval card: the staged files a command names (Phase 9d). */
+.creator-reply-files { display: flex; flex-direction: column; gap: 6px; max-height: 40vh; overflow: auto; margin-bottom: 6px; }
+.creator-staged summary { display: flex; align-items: center; gap: 8px; cursor: pointer; font-size: 12px; }
+.creator-staged-path { overflow-wrap: anywhere; }
+.creator-staged pre { max-height: 30vh; overflow: auto; margin: 4px 0 0; }

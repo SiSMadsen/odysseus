@@ -320,7 +320,8 @@ Every root command gets one of three verdicts, from the helper:
 - **Needs your approval**: everything else, one command at a time (5d). Also
   `apt-get full-upgrade`, `remove`, `purge`, `autoremove`, and `setfacl`.
 - **Refused**: anything that names the helpers' files, sockets, config, state
-  or logs, the Creator services, `/etc/systemd/system`, `/etc/sudoers*`,
+  or logs (the host helper's work folder, `/srv/creator-helper/work`, is
+  fine: it's where Creator stages files for root), the Creator services, `/etc/systemd/system`, `/etc/sudoers*`,
   `/etc/shadow`, `/etc/gshadow`, `/etc/passwd`, `/etc/group`, `/etc/polkit-1`,
   `/etc/ssh`, `/root/.ssh`, any `.ssh/` or `authorized_keys`, the Odysseus
   folder, the Docker socket, or the tools `visudo`, `passwd`, `chpasswd`,
@@ -363,6 +364,9 @@ For each root command:
   get the resolved paths and never follow links inside the tree.
 - **Needs your approval**: the job pauses with **Run as root once** / **Deny**.
   There is no "for this job" for root. Three denials in a row switch root off.
+  When the command names files Creator staged in `/srv/creator-helper/work`
+  (a script to install, say), the card shows them; a file you approved
+  earlier in the job shows only what changed since.
 - **Refused**: never runs, and root switches off at once.
 - **Root off**: the job pauses and asks you to switch it on (Root: off in the
   header), then **Run as root once**.
@@ -374,10 +378,12 @@ helper, with these walls:
 
 - unreachable: the helpers' keys, state, logs and sockets
   (`/etc/creator-root`, `/var/lib/creator-root`, `/var/log/creator-root`,
-  `/run/creator-root`, `/srv/creator-root`, `/srv/creator-helper`,
-  `/var/log/creator-helper`), the Docker socket, and the Odysseus folder;
+  `/run/creator-root`, `/srv/creator-root`, the host helper's socket and
+  home, `/var/log/creator-helper`), the Docker socket, and the Odysseus
+  folder;
 - read-only: `/opt/creator-root`, `/opt/creator-helper`, both helpers' unit
-  files, and the polkit rule;
+  files, the polkit rule, and `/srv/creator-helper` (so root can install a
+  file Creator staged in its work folder, but not change what's there);
 - no `CAP_SYS_ADMIN`, `CAP_SYS_MODULE` or `CAP_SYS_PTRACE` (mounting, kernel
   modules, reaching into other processes): each would undo the walls. A
   command that needs one of them fails;

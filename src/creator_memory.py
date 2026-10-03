@@ -168,7 +168,9 @@ class CreatorMemory:
             out["skipped"] = "memory off"
         else:
             try:
-                out["summary"] = self.save_memory(job_summary(job_id, report), owner, job_id)
+                # Skipped only if this job already has one: two jobs with the
+                # same task are still two jobs (9d).
+                out["summary"] = self.save_memory(job_summary(job_id, report), owner, job_id, per_job=True)
             except Exception:
                 logger.warning("Creator: could not save the job's memory", exc_info=True)
             if report.get("status") == "done" and prefs.get("auto_memory", True):
@@ -194,13 +196,17 @@ class CreatorMemory:
             return endpoint_url, model, headers
 
     def save_memory(self, text: str, owner: Optional[str], job_id: str,
-                    category: str = MEMORY_CATEGORY) -> Optional[str]:
-        """Adds one memory unless it's a duplicate. Returns its id or None."""
+                    category: str = MEMORY_CATEGORY, per_job: bool = False) -> Optional[str]:
+        """Adds one memory unless it's a duplicate (with `per_job`: unless this
+        job already left one in `category`). Returns its id or None."""
         from services.memory.memory_extractor import _is_text_duplicate
         entries = self.memory_manager.load_all_for_update()
         mine = [e for e in entries if e.get("owner") == (owner or None) or e.get("owner") is None] \
             if owner else entries
-        if self.memory_manager.find_duplicates(text, mine) or _is_text_duplicate(text, mine, threshold=0.8):
+        if per_job:
+            if any(e.get("session_id") == job_id and e.get("category") == category for e in mine):
+                return None
+        elif self.memory_manager.find_duplicates(text, mine) or _is_text_duplicate(text, mine, threshold=0.8):
             return None
         entry = self.memory_manager.add_entry(text, source=MEMORY_SOURCE, category=category, owner=owner or None)
         entry["session_id"] = job_id

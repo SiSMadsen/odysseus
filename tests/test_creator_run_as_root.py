@@ -46,6 +46,7 @@ class FakeRoot:
         self.error = error
         self.runs, self.denials, self.checks = [], [], []
         self.denials_to_off = denials_to_off
+        self.files = {}   # command -> staged files the helper would report
 
     @staticmethod
     def tier(command):
@@ -63,7 +64,8 @@ class FakeRoot:
         self.checks.append(command)
         if self.error:
             raise HelperError(self.error)
-        return {"ok": True, "tier": self.tier(command), "reason": "why", "root_on": self.on}
+        return {"ok": True, "tier": self.tier(command), "reason": "why", "root_on": self.on,
+                "staged_files": self.files.get(command, [])}
 
     async def run(self, command, approved=False, redact=None):
         self.runs.append({"command": command, "approved": approved, "redact": list(redact or [])})
@@ -387,3 +389,64 @@ def test_routes_offer_root_only_to_admins_in_the_browser(monkeypatch):
 
     asyncio.run(go())
     assert seen == {"allow_root": [True, False, False], "interactive": [True, False]}
+
+
+# ---------------------------------------------------------------------------
+# Staged files on the root approval card (9d)
+# ---------------------------------------------------------------------------
+
+INSTALL = "install -m 755 /srv/creator-helper/work/odystatus /usr/local/bin/odystatus"
+
+
+def _staged(text):
+    import hashlib
+    return [{"path": "/srv/creator-helper/work/odystatus", "size": len(text), "text": text,
+             "sha256": hashlib.sha256(text.encode()).hexdigest(), "truncated": False}]
+
+
+def test_the_root_card_shows_staged_files_then_only_what_changed(session_factory):
+    helper = FakeRoot()
+    card = _root_card(json.dumps({"command": INSTALL}))
+    script = [[card], [card], [card], [("text", REPORT)]]
+    contents = iter(["#!/bin/bash\necho one\n", "#!/bin/bash\necho one\n", "#!/bin/bash\necho two\n"])
+    pauses = []
+
+    async def run():
+        mgr = CreatorManager(session_factory=session_factory, agent_loop=scripted(script, []),
+                             tool_executor=_through_manager, root_helper=helper)
+        job_id = mgr.start_job("t", "u", "m", owner="alice", allow_root=True)
+
+        def gate_asks():
+            # As the real loop does just before each card. Called before the
+            # job's task runs on (no await in between).
+            helper.files[INSTALL] = _staged(next(contents))
+            mgr._live[job_id]["root_available"] = True   # the job's probe would set it a moment later
+            mgr._live[job_id]["protected_check"](RUN_AS_ROOT_TOOL, json.dumps({"command": INSTALL}))
+
+        gate_asks()
+        for n in range(3):
+            paused = await _wait_paused(mgr, job_id)
+            pauses.append(paused["state"]["pause"])
+            mgr.resume_job(job_id, decision="approve_once")
+            if n < 2:
+                gate_asks()
+            await asyncio.sleep(0.05)
+        await _wait_finished(mgr, job_id)
+
+    asyncio.run(run())
+    first, same, changed = (p["files"][0] for p in pauses)
+    assert first["status"] == "new" and first["text"] == "#!/bin/bash\necho one\n" and first["path"].endswith("/odystatus")
+    assert same["status"] == "unchanged"
+    assert changed["status"] == "changed"
+    assert "-echo one" in changed["diff"] and "+echo two" in changed["diff"] and "as you approved it" in changed["diff"]
+
+
+def test_a_denied_card_doesnt_count_as_seen():
+    views = CreatorManager._staged_file_views(_staged("a"), {})
+    assert views[0]["status"] == "new" and views[0]["binary"] is False
+    seen = {"/srv/creator-helper/work/odystatus": {"sha256": views[0]["sha256"], "text": "a"}}
+    assert CreatorManager._staged_file_views(_staged("a"), seen)[0]["status"] == "unchanged"
+    binary = [{**_staged("x")[0], "text": None, "sha256": "other"}]
+    view = CreatorManager._staged_file_views(binary, seen)[0]
+    assert view["status"] == "changed" and view["binary"] is True and "diff" not in view
+    assert CreatorManager._staged_file_views(None, seen) == []

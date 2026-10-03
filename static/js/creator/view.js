@@ -266,6 +266,32 @@ export const ROOT_NOTICE = 'This command runs on the host machine as root. Root 
   + 'a time; if root is off, switch it on in the header (Root: off), then approve.';
 
 /**
+ * The staged files a root command names (Phase 9d: pause.files), as the
+ * approval card shows them: [{title, badge, kind, body, open}]. A file you
+ * approved earlier in this job shows only what changed since (or that it
+ * didn't); a new one shows its text.
+ */
+export function stagedFiles(pause) {
+  const files = pause && Array.isArray(pause.files) ? pause.files : [];
+  return files.filter(f => f && f.path).map((f) => {
+    const size = typeof f.size === 'number' ? ` · ${f.size} bytes` : '';
+    let badge = 'new';
+    let body = f.binary ? '(a binary file: not shown)' : String(f.text ?? '');
+    let kind = 'text';
+    if (f.status === 'unchanged') {
+      badge = 'unchanged since you approved it';
+      body = '';
+      kind = 'none';
+    } else if (f.status === 'changed') {
+      badge = 'changed since you approved it';
+      if (f.diff) { body = String(f.diff); kind = 'diff'; }
+    }
+    if (kind === 'text' && f.truncated && !f.binary) body += '\n[…cut: the file is longer]';
+    return { title: `${f.path}${size}`, badge, kind, body, open: kind !== 'none' };
+  });
+}
+
+/**
  * What the reply bar offers for a pause (the `pause` object from /status).
  *   approval:          {mode: 'approval', buttons: [{label, hint, decision, tone}], placeholder, notice}
  *   question/blocked:  {mode: 'answer', buttons: [{label, answer}], placeholder, notice}

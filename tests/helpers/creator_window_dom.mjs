@@ -71,6 +71,7 @@ export class Element {
     this.parentElement = null;
     this.attributes = {};
     this.classList = new ClassList(this);
+    this.dataset = {};
     this.style = new Style();
     this.listeners = {};
     this._text = '';
@@ -101,6 +102,8 @@ export class Element {
     if (name === 'title') this.title = v;
     if (name === 'placeholder') this.placeholder = v;
     if (name === 'value') this._value = v;
+    if (name === 'open') this.open = true;
+    if (name.startsWith('data-')) this.dataset[name.slice(5).replace(/-([a-z])/g, (_, c) => c.toUpperCase())] = v;
     this.attributes[name] = v;
   }
   getAttribute(name) {

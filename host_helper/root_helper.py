@@ -412,10 +412,16 @@ class RootSwitch:
 # still needs your approval. The automatic forms are what has to be exact.
 
 # Decision 4 (2026-10-03). Anything that names one of these is refused.
+# The host helper's work folder: where Creator stages files (as `creator`) for
+# root commands to take from. Naming it is fine (9d, 2026-10-03); the rest of
+# /srv/creator-helper (its socket, its home) is refused, and root commands see
+# the whole folder read-only.
+WORK_DIR = "/srv/creator-helper/work"
+
 BUILTIN_REFUSED_PATHS = (
     # The helpers' own files, sockets, config, state and logs.
     "/opt/creator-helper", "/opt/creator-root",
-    "/srv/creator-helper", "/srv/creator-root",
+    "/srv/creator-helper/helper.sock", "/srv/creator-helper/home", "/srv/creator-root",
     "/etc/creator-root", "/var/lib/creator-root", "/run/creator-root",
     "/var/log/creator-helper", "/var/log/creator-root",
     # Units, sudo, accounts, polkit, SSH, Docker.
@@ -576,9 +582,12 @@ class Watchdog:
     nothing is automatic until it's fixed (fail closed)."""
 
     def __init__(self, path: str, odysseus_dir: str = "", owner_uid=None,
-                 hardlinks_file: str = "/proc/sys/fs/protected_hardlinks"):
+                 hardlinks_file: str = "/proc/sys/fs/protected_hardlinks", work_dir: str = WORK_DIR):
         self.path = path
         self.hardlinks_file = hardlinks_file
+        self.work_dir = os.path.normpath(work_dir)
+        # A path in the work folder, up to where shell syntax would end it.
+        self._staged_re = re.compile(re.escape(self.work_dir) + r"(?![\w.-])(/[^\s'\";|&<>()`$]*)?")
         self.odysseus_dir = os.path.normpath(odysseus_dir) if odysseus_dir else ""
         self.owner_uid = os.geteuid() if owner_uid is None else owner_uid
 
@@ -631,13 +640,27 @@ class Watchdog:
 
     # -- judging ------------------------------------------------------------
 
+    def _mask_staged(self, text: str) -> str:
+        """Paths in the work folder, blanked for the built-in list (which
+        refuses anything else under /srv/creator-helper). A path with `..` in
+        it stays, so it can't step out of the folder unseen."""
+        def repl(m):
+            rest = m.group(1) or ""
+            return m.group(0) if ".." in rest.split("/") else "<staged>"
+        return self._staged_re.sub(repl, text)
+
     def _refused_hit(self, text: str, settings: dict):
         """What in `text` the refused list names, or None."""
         squashed = re.sub(r"/+", "/", text)
         while "/./" in squashed:
             squashed = squashed.replace("/./", "/")
         for candidate in (text, squashed):
-            for path in self.refused_paths() + settings["extra_refused"]:
+            # Your extra refused paths see the command as it is.
+            for path in settings["extra_refused"]:
+                if path in candidate:
+                    return path
+        for candidate in (self._mask_staged(text), self._mask_staged(squashed)):
+            for path in self.refused_paths():
                 if path in candidate:
                     return path
             for fragment in BUILTIN_REFUSED_FRAGMENTS:
@@ -647,6 +670,62 @@ class Watchdog:
             if m:
                 return m.group(1)
         return None
+
+    MAX_STAGED_FILES = 5
+    MAX_STAGED_BYTES = 32 * 1024
+
+    def staged_files(self, command: str) -> list:
+        """The work-folder files a command names, for the approval card:
+        path, size, sha256 and the text (None for a binary file), cut at
+        MAX_STAGED_BYTES. Only regular files that resolve inside the work
+        folder and belong to its owner (so not a link, or a hard link, to a
+        root file), and only with fs.protected_hardlinks on."""
+        out, seen = [], set()
+        if not isinstance(command, str) or not self._hardlinks_protected():
+            return out
+        try:
+            folder_owner = os.stat(self.work_dir).st_uid
+        except OSError:
+            return out
+        root = os.path.realpath(self.work_dir)
+        for m in self._staged_re.finditer(command):
+            rest = m.group(1) or ""
+            if not rest or ".." in rest.split("/"):
+                continue
+            path = os.path.normpath(self.work_dir + rest)
+            if path in seen:
+                continue
+            seen.add(path)
+            real = os.path.realpath(path)
+            if not real.startswith(root + "/"):
+                continue
+            try:
+                fd = os.open(real, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
+            except OSError:
+                continue
+            try:
+                st = os.fstat(fd)
+                if not stat.S_ISREG(st.st_mode) or st.st_uid != folder_owner or st.st_nlink != 1:
+                    continue
+                with os.fdopen(os.dup(fd), "rb") as f:
+                    data = f.read(self.MAX_STAGED_BYTES + 1)
+            finally:
+                os.close(fd)
+            whole = hashlib.sha256()
+            try:
+                with open(real, "rb") as f:
+                    for chunk in iter(lambda: f.read(65536), b""):
+                        whole.update(chunk)
+            except OSError:
+                continue
+            text = None
+            if b"\x00" not in data[:self.MAX_STAGED_BYTES]:
+                text = data[:self.MAX_STAGED_BYTES].decode("utf-8", errors="replace")
+            out.append({"path": path, "size": st.st_size, "sha256": whole.hexdigest(), "text": text,
+                        "truncated": st.st_size > self.MAX_STAGED_BYTES})
+            if len(out) >= self.MAX_STAGED_FILES:
+                break
+        return out
 
     def judge(self, command) -> dict:
         """{"tier", "reason", ...}. Pure: runs nothing and changes nothing."""
@@ -831,12 +910,14 @@ RUN_ENV = {"PATH": RUN_PATH, "HOME": "/root", "LANG": "C.UTF-8", "TERM": "dumb",
 # Odysseus folder is added from --odysseus-dir. "-": fine if it doesn't exist.
 WALL_INACCESSIBLE = (
     "/etc/creator-root", "/var/lib/creator-root", "/var/log/creator-root", "/run/creator-root",
-    "/srv/creator-root", "/srv/creator-helper", "/var/log/creator-helper",
+    "/srv/creator-root", "/srv/creator-helper/helper.sock", "/srv/creator-helper/home",
+    "/var/log/creator-helper",
     "/run/docker.sock", "/var/run/docker.sock",
 )
-# Readable, not changeable: the helper programs, their units and the polkit rule.
+# Readable, not changeable: the helper programs, their units and the polkit
+# rule, and the host helper's folder (its work folder holds staged files).
 WALL_READ_ONLY = (
-    "/opt/creator-root", "/opt/creator-helper",
+    "/opt/creator-root", "/opt/creator-helper", "/srv/creator-helper",
     "/etc/systemd/system/creator-root-helper.service", "/etc/systemd/system/creator-helper.service",
     "/etc/polkit-1/rules.d/50-creator-apache.rules",
 )
@@ -1051,7 +1132,9 @@ class RootHelper:
                 verdict = self.watchdog.judge(request.get("command"))
             except ValueError as e:
                 return {"ok": False, "type": "check", "reason": "bad_request", "error": str(e)}
-            return {"ok": True, "type": "check", **verdict}
+            # The staged files it names, for the approval card (9d).
+            return {"ok": True, "type": "check", **verdict,
+                    "staged_files": self.watchdog.staged_files(request.get("command"))}
         if rtype == "watchdog":
             return {"ok": True, "type": "watchdog", **self.watchdog.describe()}
         if rtype == "watchdog_save":

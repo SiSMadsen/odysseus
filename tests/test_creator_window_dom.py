@@ -495,3 +495,30 @@ def test_no_root_strip_for_non_admins_or_without_the_helper():
         done({ strip: env.buttons('#creator-root') });
     """)
     assert out == {"strip": []}
+
+
+def test_a_root_card_shows_the_staged_files():
+    pause = """{ kind: 'approval', question: 'q', scope: 'root', protected: false, since: 'r1',
+        action: { tool: 'run_as_root', command: '{"command": "install /srv/creator-helper/work/x /usr/local/bin/x"}' },
+        choices: ['approve_once', 'deny'],
+        files: [{ path: '/srv/creator-helper/work/x', size: 12, text: 'echo staged', status: 'new' },
+                { path: '/srv/creator-helper/work/y', size: 3, text: 'abc', status: 'unchanged' }] }"""
+    out = _run(_paused(pause) + """
+        const boxes = env.$$('#creator-reply-files details');
+        done({ shown: h.visible(env.byId('creator-reply-files')),
+               files: boxes.map(d => [d.querySelector('summary').textContent, d.open,
+                                      d.querySelector('pre') ? d.querySelector('pre').textContent : null]),
+               buttons: env.buttons('#creator-reply-choices') });
+    """)
+    assert out["shown"] is True
+    assert out["files"] == [["/srv/creator-helper/work/x · 12 bytesnew", True, "echo staged"],
+                            ["/srv/creator-helper/work/y · 3 bytesunchanged since you approved it", False, None]]
+    assert out["buttons"] == ["Run as root once", "Deny"]
+
+
+def test_other_cards_show_no_files():
+    out = _run(_paused("""{ kind: 'approval', question: 'q', scope: 'untrusted', since: 'u1',
+        action: { tool: 'bash', command: 'ls' }, choices: ['approve_once', 'deny'] }""") + """
+        done({ shown: h.visible(env.byId('creator-reply-files')), n: env.$$('#creator-reply-files details').length });
+    """)
+    assert out == {"shown": False, "n": 0}

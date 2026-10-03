@@ -111,10 +111,13 @@ def test_the_unit_gets_the_walls_and_the_time_limit(root, in_tmp):
     assert "RuntimeMaxSec=900" in props and "UMask=0022" in props
     inaccessible = next(p for p in props if p.startswith("InaccessiblePaths="))
     for path in ("/etc/creator-root", "/var/lib/creator-root", "/var/log/creator-root", "/srv/creator-root",
-                 "/run/creator-root", "/srv/creator-helper", "/run/docker.sock", "/home/me/odysseus"):
+                 "/run/creator-root", "/srv/creator-helper/helper.sock", "/srv/creator-helper/home",
+                 "/run/docker.sock", "/home/me/odysseus"):
         assert f"-{path}" in inaccessible.split("=", 1)[1].split()
-    read_only = next(p for p in props if p.startswith("ReadOnlyPaths="))
-    assert "-/opt/creator-root" in read_only and "-/etc/systemd/system/creator-root-helper.service" in read_only
+    read_only = next(p for p in props if p.startswith("ReadOnlyPaths=")).split("=", 1)[1].split()
+    # The host helper's folder (with the staged files) is readable, never writable.
+    for path in ("/opt/creator-root", "/etc/systemd/system/creator-root-helper.service", "/srv/creator-helper"):
+        assert f"-{path}" in read_only
     assert "CapabilityBoundingSet=~CAP_SYS_ADMIN CAP_SYS_MODULE CAP_SYS_PTRACE" in props
     assert "BindsTo=creator-root-helper.service" in props
     assert args[args.index("--") + 1:] == ["apt-get", "update"]

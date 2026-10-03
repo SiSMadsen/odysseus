@@ -371,3 +371,26 @@ def test_root_commands_read_plainly_and_their_approval_is_once_only():
     assert labels == [["Run as root once", "approve_once"], ["Deny", "deny"]]
     assert "as root" in notice and "Root: off" in notice
     assert "protected path" in out["rootProtected"]
+
+
+@needs_node
+def test_staged_files_show_text_diff_or_nothing():
+    out = _run(textwrap.dedent(f"""
+        const v = await import('{_VIEW}');
+        console.log(JSON.stringify(v.stagedFiles({{ files: [
+          {{ path: '/srv/creator-helper/work/a', size: 5, text: 'hello', status: 'new' }},
+          {{ path: '/srv/creator-helper/work/b', size: 9, text: 'x', status: 'changed', diff: '-old\\n+new' }},
+          {{ path: '/srv/creator-helper/work/c', size: 1, text: 'y', status: 'unchanged' }},
+          {{ path: '/srv/creator-helper/work/d', size: 4, text: null, binary: true, status: 'new' }},
+          {{ path: '/srv/creator-helper/work/e', size: 99999, text: 'long', truncated: true, status: 'new' }},
+          {{ nope: 1 }},
+        ] }})));
+    """))
+    assert [(f["badge"], f["kind"], f["body"], f["open"]) for f in out] == [
+        ("new", "text", "hello", True),
+        ("changed since you approved it", "diff", "-old\n+new", True),
+        ("unchanged since you approved it", "none", "", False),
+        ("new", "text", "(a binary file: not shown)", True),
+        ("new", "text", "long\n[…cut: the file is longer]", True),
+    ]
+    assert out[0]["title"] == "/srv/creator-helper/work/a · 5 bytes"

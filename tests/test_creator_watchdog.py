@@ -143,7 +143,9 @@ def test_symlinks_are_resolved_before_the_folder_check(site, in_tmp):
     ("python3 root_helper.py on 90", "root_helper.py"),
     ("cat /var/lib/creator-root/watchdog.json", "/var/lib/creator-root"),
     ("truncate -s0 /var/log/creator-root/audit.jsonl", "/var/log/creator-root"),
-    ("rm -rf /srv/creator-helper/work", "/srv/creator-helper"),
+    ("rm -rf /srv/creator-helper/home", "/srv/creator-helper/home"),
+    ("nc -U /srv/creator-helper/helper.sock", "/srv/creator-helper/helper.sock"),
+    ("cat /srv/creator-helper/work/../helper.sock", "creator-helper"),   # no stepping out of the work folder
     ("curl --unix-socket /var/run/docker.sock http://x/containers", "/var/run/docker.sock"),
     ("docker -H unix:///run/docker.sock ps", "/run/docker.sock"),
     ("cat /home/me/odysseus/data/app.key", "/home/me/odysseus"),
@@ -502,3 +504,78 @@ def test_card_says_what_a_verdict_means():
     assert text.startswith("Refused: It names /etc/shadow.") and "root switches off" in text and "(Note: x)" in text
     assert _js("m.verdictText({tier: 'approval', reason: 'r'})") == "Needs your approval: r"
     assert _js("m.verdictText(null)") == ""
+
+
+# ---------------------------------------------------------------------------
+# The work folder (9d): staged files for root commands
+# ---------------------------------------------------------------------------
+
+def test_the_work_folder_can_be_named_the_rest_of_the_helpers_folder_cant(site):
+    dog, _ = site
+    for command in ("install -m 755 /srv/creator-helper/work/odystatus /usr/local/bin/odystatus",
+                    "bash /srv/creator-helper/work/setup.sh", "ls /srv/creator-helper/work",
+                    "cp /srv/creator-helper/work/a.conf /etc/apache2/conf-available/a.conf"):
+        assert dog.judge(command)["tier"] == "approval", command
+    assert dog.judge("cat /srv/creator-helper/workfoo")["tier"] == "refused"
+    assert dog.judge("cp /srv/creator-helper/work/x /srv/creator-helper/home/y")["tier"] == "refused"
+    # Your extra refused paths see the command as written.
+    settings, _ = dog.load()
+    settings["extra_refused"] = ["/srv/creator-helper/work/secret"]
+    dog.save(settings)
+    assert dog.judge("cat /srv/creator-helper/work/secret.txt")["refused_by"] == "/srv/creator-helper/work/secret"
+
+
+def _staging(tmp_path):
+    work = tmp_path / "work"
+    work.mkdir()
+    dog = mod.Watchdog(str(tmp_path / "state" / "wd.json"), work_dir=str(work))
+    return dog, work
+
+
+def test_staged_files_are_shown_with_their_text(tmp_path):
+    dog, work = _staging(tmp_path)
+    (work / "odystatus").write_text("#!/bin/bash\necho hi\n")
+    (work / "blob.bin").write_bytes(b"\x7fELF\x00\x01")
+    (work / "big.txt").write_text("x" * (dog.MAX_STAGED_BYTES + 10))
+    import hashlib
+    files = dog.staged_files(f"install -m 755 {work}/odystatus /usr/local/bin/odystatus; cp {work}/blob.bin "
+                             f"{work}/big.txt /opt/ ; cat {work}/odystatus {work}/missing")
+    by = {f["path"]: f for f in files}
+    assert list(by) == [f"{work}/odystatus", f"{work}/blob.bin", f"{work}/big.txt"]
+    assert by[f"{work}/odystatus"] == {"path": f"{work}/odystatus", "size": 20, "text": "#!/bin/bash\necho hi\n",
+                                       "sha256": hashlib.sha256(b"#!/bin/bash\necho hi\n").hexdigest(),
+                                       "truncated": False}
+    assert by[f"{work}/blob.bin"]["text"] is None
+    assert by[f"{work}/big.txt"]["truncated"] is True and len(by[f"{work}/big.txt"]["text"]) == dog.MAX_STAGED_BYTES
+
+
+def test_staged_files_never_show_what_lies_outside_the_folder(tmp_path):
+    dog, work = _staging(tmp_path)
+    secret = tmp_path / "secret"
+    secret.write_text("root only")
+    os.symlink(secret, work / "link")
+    os.link(secret, work / "hard")                         # a hard link: two names
+    (work / "sub").mkdir()
+    files = dog.staged_files(f"cat {work}/link {work}/hard {work}/sub {work}/../secret {work}/sub/../../secret")
+    assert files == []
+    off = tmp_path / "hl"
+    off.write_text("0")
+    dog.hardlinks_file = str(off)
+    (work / "ok").write_text("fine")
+    assert dog.staged_files(f"cat {work}/ok") == []         # protected_hardlinks off: show nothing
+
+
+def test_check_returns_the_staged_files(in_tmp):
+    clock = Clock()
+    h = _helper(in_tmp, clock)
+    work = in_tmp / "work"
+    work.mkdir()
+    (work / "s.sh").write_text("echo staged")
+    h.watchdog = mod.Watchdog(str(in_tmp / "state" / "wd.json"), work_dir=str(work))
+
+    async def go():
+        reply = await _raw(SOCK, {"type": "check", "command": f"bash {work}/s.sh"})
+        assert reply["tier"] == "approval"
+        assert [(f["path"], f["text"]) for f in reply["staged_files"]] == [(f"{work}/s.sh", "echo staged")]
+
+    _run(h, go)

@@ -294,6 +294,7 @@ function _buildReplyBar() {
   send.addEventListener('click', () => _sendReply({ answer: text.value }));
   const bar = make('div', { id: 'creator-reply', class: 'creator-composer creator-reply' }, [
     make('div', { id: 'creator-reply-notice', class: 'creator-reply-notice' }),
+    make('div', { id: 'creator-reply-files', class: 'creator-reply-files' }),
     make('div', { id: 'creator-reply-choices', class: 'creator-reply-choices' }),
     text,
     make('div', { class: 'creator-options' }, [
@@ -981,6 +982,21 @@ function _renderReply() {
   if (notice) {
     notice.textContent = controls.notice;
     notice.hidden = !controls.notice;
+  }
+  // A root command's staged files (9d): what you're about to approve. Rebuilt
+  // only for a new pause, so a file you opened or scrolled stays as it is.
+  const filesBox = byId('creator-reply-files');
+  if (filesBox && filesBox.dataset.key !== key) {
+    filesBox.dataset.key = key;
+    const files = view.stagedFiles(pause);
+    filesBox.replaceChildren(...files.map(f => make('details', { class: `creator-staged kind-${f.kind}`, open: f.open }, [
+      make('summary', {}, [
+        make('code', { class: 'creator-staged-path', text: f.title }),
+        make('span', { class: 'creator-chip', text: f.badge }),
+      ]),
+      f.body ? make('pre', { class: 'creator-cmd-output', text: f.body }) : null,
+    ])));
+    filesBox.hidden = !files.length;
   }
   const choices = byId('creator-reply-choices');
   if (choices) {

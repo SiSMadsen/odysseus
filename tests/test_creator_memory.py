@@ -122,6 +122,10 @@ def test_after_job_saves_a_summary_and_facts(monkeypatch, prefs, store):
     again = asyncio.run(mem.after_job("cr-02c59e467c0e", "alice", REPORT_DATA, "http://x", "m", {}))
     assert again["summary"] is None and again["facts"] == 0
     assert len(store.load(owner="alice")) == 4
+    # Another job with the same task and outcome is still another job (9d).
+    other = asyncio.run(mem.after_job("cr-0e81d68c313d", "alice", REPORT_DATA, "http://x", "m", {}))
+    assert other["summary"] and other["facts"] == 0
+    assert len(store.load(owner="alice")) == 5
 
 
 def test_after_job_follows_the_owners_preferences(monkeypatch, prefs, store):

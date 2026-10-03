@@ -218,6 +218,15 @@ the watchdog (not with scripts, encodings or other tools); if the task needs \
 something it refuses, say so in the report.
 - Root has to be switched on by the user. If it's off, the job pauses and \
 asks them; you don't need to ask separately.
+- To put a file in place as root (a script in /usr/local/bin, a config \
+file), write it first with `host_exec` in the work folder \
+/srv/creator-helper/work, then install it from there with `run_as_root` \
+(e.g. `install -m 755 /srv/creator-helper/work/x /usr/local/bin/x`). The \
+user's approval card shows that file. Never stage files in the web root \
+(Apache serves them to anyone) or in /tmp (root can't see the host \
+helper's /tmp). Root commands can read the work folder but not change it.
+- If the watchdog refuses a command, don't move files or rephrase to try \
+again: say in the report what was needed.
 """
 
 
@@ -475,6 +484,8 @@ _STATUS_LABELS = {
 }
 
 
+_MAX_DIFF_LINES = 300
+
 _ROOT_REPORT_MARKS = {"automatic": "automatic", "approved": "approved by you",
                       "refused": "refused by the watchdog", "not_run": "not run"}
 
@@ -718,7 +729,7 @@ class CreatorManager:
         if not pause:
             return None
         return {k: pause.get(k) for k in
-                ("kind", "question", "options", "action", "protected", "scope", "choices", "since")}
+                ("kind", "question", "options", "action", "protected", "scope", "choices", "since", "files")}
 
     def _state_snapshot(self, live: dict) -> dict:
         return {
@@ -837,6 +848,9 @@ class CreatorManager:
             # root helper answers. root_approved: the one root command you
             # just approved, handed to run_as_root once.
             "allow_root": bool(allow_root), "root_available": False, "root_approved": None,
+            # 9d: the staged files each root command named when the gate asked
+            # (command -> files), and what you approved (path -> sha256, text).
+            "root_files": {}, "root_seen": {},
             # Phase 9: the owner's saved memories that matter for the task,
             # given to every segment (chosen once, at the start).
             "memory_messages": self._memory_for(task, owner),
@@ -852,7 +866,7 @@ class CreatorManager:
             if tool_name == HOST_EXEC_TOOL and not live["host_all_approved"]:
                 return HOST_GATE_REASON
             if tool_name == RUN_AS_ROOT_TOOL and live["root_available"]:
-                return self._root_gate(content)
+                return self._root_gate(content, live)
             return None
 
         live["protected_check"] = gate
@@ -930,7 +944,36 @@ class CreatorManager:
         except RuntimeError:
             pass
 
-    def _root_gate(self, content) -> Optional[str]:
+    @staticmethod
+    def _staged_file_views(files, seen: dict) -> List[dict]:
+        """The staged files a root command names, for its approval card: each
+        with its text, or what changed since you approved it earlier in this
+        job (`seen`: path -> {"sha256", "text"} at your last approval)."""
+        import difflib
+        views = []
+        for f in files or []:
+            if not isinstance(f, dict) or not f.get("path"):
+                continue
+            view = {"path": f["path"], "size": f.get("size"), "sha256": f.get("sha256"),
+                    "truncated": bool(f.get("truncated")), "binary": f.get("text") is None,
+                    "text": f.get("text")}
+            before = seen.get(f["path"])
+            if before is None:
+                view["status"] = "new"
+            elif before.get("sha256") == f.get("sha256"):
+                view["status"] = "unchanged"
+            else:
+                view["status"] = "changed"
+                if before.get("text") is not None and f.get("text") is not None:
+                    diff = list(difflib.unified_diff(
+                        before["text"].splitlines(), f["text"].splitlines(),
+                        "as you approved it", "now", lineterm="", n=2))
+                    view["diff"] = "\n".join(diff[:_MAX_DIFF_LINES]) + (
+                        "\n[…diff cut]" if len(diff) > _MAX_DIFF_LINES else "")
+            views.append(view)
+        return views
+
+    def _root_gate(self, content, live: Optional[dict] = None) -> Optional[str]:
         """Whether a run_as_root call pauses: when root is off (you switch it
         on, then approve), or when the watchdog says it needs approval.
         Automatic and refused commands go straight to the helper, which
@@ -950,6 +993,9 @@ class CreatorManager:
             return None   # the run fails and says why
         if not verdict.get("ok"):
             return None
+        if live is not None:
+            # For the approval card: the staged files this command names (9d).
+            live["root_files"][command] = verdict.get("staged_files") or []
         tier = verdict.get("tier")
         if tier == "refused":
             return None
@@ -1432,6 +1478,15 @@ class CreatorManager:
                             "choices": (["approve_once", "deny"] if protected or scope == "root"
                                         else list(APPROVAL_DECISIONS)),
                         }}
+                        if scope == "root":
+                            try:
+                                root_command = parse_run_as_root_args(content)
+                            except ValueError:
+                                root_command = ""
+                            files = self._staged_file_views(live["root_files"].get(root_command),
+                                                            live["root_seen"])
+                            if files:
+                                ending["pause"]["files"] = files
                     else:
                         options = [
                             (o.get("label") if isinstance(o, dict) else str(o))
@@ -1637,6 +1692,12 @@ class CreatorManager:
                                        "Don't ask for root again in this job; report what's left.")
                     else:
                         result = await run_approved(action["tool"], action["command"])
+                        if request.get("scope") == "root":
+                            # What you've now seen and approved: the next card
+                            # shows only what changed since.
+                            for f in request.get("files") or []:
+                                if f.get("sha256"):
+                                    live["root_seen"][f["path"]] = {"sha256": f["sha256"], "text": f.get("text")}
                         host_scope = request.get("scope") == "host"
                         if decision == "approve_job":
                             if host_scope:
