@@ -107,7 +107,7 @@ def test_after_job_saves_a_summary_and_facts(monkeypatch, prefs, store):
     ]))
     mem = CreatorMemory(memory_manager=store)
     out = asyncio.run(mem.after_job("cr-02c59e467c0e", "alice", REPORT_DATA, "http://x", "m", {}))
-    assert out["summary"] and out["facts"] == 3 and out["skill"] is None
+    assert out["summary"] and out["facts"] == 4 and out["lessons"] == 0 and out["skill"] is None
     entries = store.load(owner="alice")
     summary = next(e for e in entries if e["id"] == out["summary"])
     assert summary["category"] == "creator" and summary["source"] == "creator"
@@ -115,17 +115,18 @@ def test_after_job_saves_a_summary_and_facts(monkeypatch, prefs, store):
     facts = {e["text"]: e["category"] for e in entries if e["id"] != out["summary"]}
     assert facts == {"cowsay 3.03 is installed on the host, in /usr/games.": "fact",
                      "The user wants packages installed with apt-get.": "preference",
-                     "Apache serves /var/www/html.": "fact"}
+                     "Apache serves /var/www/html.": "fact", "one more": "fact"}   # at most 4 saved
     assert "Job report:" in calls[0]["messages"][1]["content"]
-    assert "never include those" in calls[0]["messages"][0]["content"]
+    assert "Never include passwords, tokens, keys" in calls[0]["messages"][0]["content"]
     # The same job again: nothing new (duplicates are skipped).
     again = asyncio.run(mem.after_job("cr-02c59e467c0e", "alice", REPORT_DATA, "http://x", "m", {}))
-    assert again["summary"] is None and again["facts"] == 0
-    assert len(store.load(owner="alice")) == 4
+    # (Only the one fact the cap left out last time is new.)
+    assert again["summary"] is None and again["facts"] == 1
+    assert len(store.load(owner="alice")) == 6
     # Another job with the same task and outcome is still another job (9d).
     other = asyncio.run(mem.after_job("cr-0e81d68c313d", "alice", REPORT_DATA, "http://x", "m", {}))
     assert other["summary"] and other["facts"] == 0
-    assert len(store.load(owner="alice")) == 5
+    assert len(store.load(owner="alice")) == 7
 
 
 def test_after_job_follows_the_owners_preferences(monkeypatch, prefs, store):
@@ -140,7 +141,13 @@ def test_after_job_follows_the_owners_preferences(monkeypatch, prefs, store):
     prefs.update(auto_memory=True)
     out = asyncio.run(mem.after_job("cr-2", "alice", {**REPORT_DATA, "status": "error", "asked": "Other task"},
                                     "http://x", "m", {}))
-    assert out["summary"] and calls == []                     # no facts from a failed job
+    # A failed job: lessons only (a failure teaches too), never facts.
+    assert out["summary"] and len(calls) == 1
+    prompt = calls[0]["messages"][0]["content"]
+    assert "LESSONS" in prompt and "FACTS" not in prompt
+    out = asyncio.run(mem.after_job("cr-3", "alice", {**REPORT_DATA, "status": "stopped", "asked": "Third",
+                                                      "commands": []}, "http://x", "m", {}))
+    assert len(calls) == 1                                    # did nothing: nothing to learn
 
 
 def test_a_skill_is_learned_from_a_finished_job_and_marked_creator(monkeypatch, prefs, tmp_path):
@@ -336,3 +343,98 @@ def test_execute_tool_block_reaches_creator_jobs(monkeypatch):
     desc, _ = asyncio.run(tool_execution.execute_tool_block(
         block, owner="alice", session_id="s1", security_context=ToolRunSecurityContext()))
     assert desc == "creator_jobs" and seen == {"content": '{"action": "list"}', "owner": "alice"}
+
+
+# ---------------------------------------------------------------------------
+# Lessons (learned by doing)
+# ---------------------------------------------------------------------------
+
+STATUS_REPORT = {
+    **REPORT_DATA,
+    "asked": "Build a server status page with goaccess.",
+    "commands": [
+        {"n": 1, "tool": "run_as_root", "command": '{"command": "install odystatus"}', "ok": True,
+         "exit_code": 0, "root": "approved", "approved": True},
+        {"n": 2, "tool": "run_as_root", "command": '{"command": "/usr/local/bin/odystatus"}', "ok": False,
+         "exit_code": 1, "root": "approved", "approved": True},
+        {"n": 3, "tool": "run_as_root", "command": '{"command": "systemctl reload apache2"}', "ok": True,
+         "exit_code": 0, "root": "approved", "approved": True},
+        {"n": 4, "tool": "run_as_root", "command": '{"command": "apt-get install -y goaccess"}', "ok": True,
+         "exit_code": 0, "root": "automatic"},
+    ],
+    "failures": ["[run_as_root] `x` failed 3 times the same way: boom"],
+}
+
+
+def test_the_report_shows_the_effort_so_lessons_can_cut_it():
+    text = report_text(STATUS_REPORT)
+    assert "-> failed (exit 1), as root: approved" in text and "-> ok, as root: automatic" in text
+    assert "Effort: 4 commands, 1 failed, 3 needed the user's approval (3 of them root commands)." in text
+    assert "Repeated failures:\n- [run_as_root] `x` failed 3 times" in text
+
+
+def test_lessons_are_saved_marked_and_capped(monkeypatch, prefs, store):
+    _llm(monkeypatch, json.dumps([
+        {"text": "goaccess -o needs a file name ending in .html.", "category": "lesson"},
+        {"text": "Creator lesson: reloading Apache needs no root; use host_exec.", "category": "lesson"},
+        {"text": "index.html uses CRLF line endings; edit it byte for byte.", "category": "lesson"},
+        {"text": "a fourth lesson, past the limit", "category": "lesson"},
+        {"text": "goaccess 1.7 is installed.", "category": "fact"},
+    ]))
+    out = asyncio.run(CreatorMemory(memory_manager=store).after_job(
+        "cr-9", "alice", STATUS_REPORT, "http://x", "m", {}))
+    assert out["lessons"] == 3 and out["facts"] == 1
+    lessons = [e["text"] for e in store.load(owner="alice") if e["category"] == "lesson"]
+    assert lessons == ["Creator lesson: goaccess -o needs a file name ending in .html.",
+                       "Creator lesson: reloading Apache needs no root; use host_exec.",
+                       "Creator lesson: index.html uses CRLF line endings; edit it byte for byte."]
+
+
+def test_a_stopped_job_still_leaves_lessons_but_no_facts(monkeypatch, prefs, store):
+    _llm(monkeypatch, json.dumps([
+        {"text": "Root can't see the host helper's /tmp: stage files in the work folder.", "category": "lesson"},
+        {"text": "This should be ignored: a fact from an unfinished job.", "category": "fact"},
+    ]))
+    out = asyncio.run(CreatorMemory(memory_manager=store).after_job(
+        "cr-8", "alice", {**STATUS_REPORT, "status": "stopped"}, "http://x", "m", {}))
+    assert out["lessons"] == 1 and out["facts"] == 0
+    assert [e["category"] for e in store.load(owner="alice")] == ["creator", "lesson"]
+
+
+def test_a_job_is_given_the_lessons_that_match_its_task(prefs, store):
+    entries = store.load_all_for_update()
+    for text, cat in (("Creator lesson: goaccess -o needs a file name ending in .html.", "lesson"),
+                      ("Creator lesson: reloading apache needs no root; use host_exec.", "lesson"),
+                      ("Creator lesson: postgres dumps need the postgres user.", "lesson"),
+                      ("Apache serves /var/www/html.", "fact")):
+        entries.append(store.add_entry(text, category=cat, owner="alice"))
+    store.save(entries)
+
+    class Proc(FakeProcessor):
+        def build_context_preface(self, **kw):
+            return ([untrusted_context_message("saved memory: retrieved context",
+                                               "- Creator lesson: postgres dumps need the postgres user.")], [], [])
+
+    msgs = CreatorMemory(memory_manager=store, chat_processor=Proc()).context_messages(
+        "Add the goaccess traffic report to the apache status page", "alice")
+    block = msgs[-1]
+    assert block["metadata"]["source"] == "saved memory: creator lessons"
+    assert "goaccess -o needs" in block["content"] and "reloading apache" in block["content"]
+    assert "postgres" not in block["content"]       # unrelated, and already in the memory block
+    assert CreatorMemory(memory_manager=store, chat_processor=Proc()).lessons_for("Bake a cake", "alice") == []
+    assert CreatorMemory(memory_manager=store).lessons_for("goaccess", "bob") == []   # only your own
+
+
+def test_lessons_use_chats_retrieval_when_it_has_one(prefs, store):
+    entries = store.load_all_for_update()
+    entries.append(store.add_entry("Creator lesson: a.", category="lesson", owner="alice"))
+    store.save(entries)
+    asked = []
+
+    class Proc:
+        def _hybrid_retrieve(self, message, mem_entries, k=5):
+            asked.append((message, k, [e["text"] for e in mem_entries]))
+            return mem_entries
+
+    assert CreatorMemory(memory_manager=store, chat_processor=Proc()).lessons_for("task", "alice") == ["Creator lesson: a."]
+    assert asked == [("task", 6, ["Creator lesson: a."])]

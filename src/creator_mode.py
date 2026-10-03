@@ -188,6 +188,12 @@ PROGRESS line.
 - `creator` can only do what it has been allowed on the host. A "Permission \
 denied" there is a limit, not a puzzle: don't look for ways around it. Say \
 what access is missing in the report.
+- What `creator` is normally allowed (see the host helper's README): edit \
+files in /var/www/html, read Apache's logs, and \
+`systemctl start|reload|restart apache2` (no sudo needed). Do those with \
+`host_exec`, never as root.
+- Keep backups, drafts and scratch files in the work folder \
+(/srv/creator-helper/work), and say in the report which ones you left there.
 """
 
 
@@ -227,6 +233,17 @@ user's approval card shows that file. Never stage files in the web root \
 helper's /tmp). Root commands can read the work folder but not change it.
 - If the watchdog refuses a command, don't move files or rephrase to try \
 again: say in the report what was needed.
+- Every root command that isn't automatic is a card the user has to click, \
+so plan for as few as possible:
+  - Use root only for what `creator` can't do. Reloading Apache, editing the \
+web root and reading its logs don't need root.
+  - Test before you install: run a new script as `creator` first, with its \
+output pointed at the work folder, and check the result. Then install it \
+once and run it once as root. Don't install, run, fix and reinstall.
+  - Don't copy backups or scratch files into system folders; keep them in \
+the work folder.
+  - Put related changes in one file where you can (one cron file, one \
+config snippet) rather than several commands.
 """
 
 

@@ -37,27 +37,58 @@ SKILL_SOURCE = "creator"
 # (chat's extractor wants 2 rounds or 2 tool calls).
 SKILL_MIN_COMMANDS = 2
 MAX_FACTS = 4
+MAX_LESSONS = 3
+LESSON_CATEGORY = "lesson"
+LESSON_PREFIX = "Creator lesson: "
+# Lessons given to a job, matched on its task.
+MAX_LESSONS_IN = 6
 SUMMARY_TASK_CHARS = 160
 SUMMARY_DONE_CHARS = 280
 # What the fact extractor and skill extractor are shown of a report.
 EXTRACT_REPORT_CHARS = 6000
 
-FACTS_SYSTEM_PROMPT = (
-    "You read the report of a finished admin job on the user's own server and "
-    "extract DURABLE facts about that machine and its setup, useful for later "
-    "jobs and chats.\n\n"
-    "Good: where things are (web root, config files, log paths), which "
-    "services/software and versions are installed, what was changed and is "
-    "still in effect, how the user wants things done there.\n"
-    "Bad: one-off command output, failed attempts, temporary states, anything "
-    "about the AI itself, passwords/tokens/keys or anything like a secret "
-    "(never include those, even if shown).\n\n"
-    f"Rules: at most {MAX_FACTS} facts; each one short sentence (under 20 words) "
-    "that makes sense on its own; only what the report shows to be true; if "
-    "nothing durable, return [].\n"
-    "Return a JSON array of objects with 'text' and 'category' "
-    "('fact', 'project' or 'preference'). Only JSON, no fences."
+FACTS_RULES = (
+    "FACTS (category 'fact', 'project' or 'preference'): DURABLE facts about "
+    "the machine and its setup. Good: where things are (web root, config "
+    "files, log paths), which services/software and versions are installed, "
+    "what was changed and is still in effect, how the user wants things done. "
+    "Bad: one-off command output, temporary states. "
+    f"At most {MAX_FACTS}.\n"
 )
+LESSONS_RULES = (
+    "LESSONS (category 'lesson'): what the job learned by DOING that would "
+    "make the next job on this machine faster or smoother. Good: a tool's "
+    "quirk and its fix (\"goaccess -o needs a file name ending in .html\"), a "
+    "pitfall that cost a retry (\"index.html uses CRLF line endings: edit it "
+    "byte for byte\"), a step that turned out unnecessary or could be done "
+    "with less privilege (\"reloading Apache needs no root: use host_exec\"), "
+    "a way to need fewer root approvals. Each one general enough to reuse, "
+    "with the concrete detail that makes it useful. Bad: restating the task, "
+    "praise, vague advice (\"be careful\"), anything only true for this one "
+    f"run. At most {MAX_LESSONS}; none is fine.\n"
+)
+
+
+def knowledge_prompt(facts: bool) -> str:
+    """The extraction prompt: facts and lessons, or (for a job that didn't
+    finish) lessons only."""
+    return (
+        "You read the report of an admin job an AI agent (Creator) ran on the "
+        "user's own server, and extract what is worth remembering for later "
+        "jobs and chats.\n\n"
+        + (FACTS_RULES if facts else "")
+        + LESSONS_RULES
+        + "\nNever include passwords, tokens, keys or anything like a secret, "
+        "even if shown. Each item one short sentence (under 25 words) that "
+        "makes sense on its own; only what the report shows. If nothing is "
+        "worth keeping, return [].\n"
+        "Return a JSON array of objects with 'text' and 'category'. Only JSON, "
+        "no fences."
+    )
+
+
+# Kept for callers that only want facts.
+FACTS_SYSTEM_PROMPT = knowledge_prompt(True)
 
 
 def _prefs(owner: Optional[str]) -> dict:
@@ -107,8 +138,17 @@ def report_text(report: Dict[str, Any]) -> str:
         lines = []
         for c in commands[-30:]:
             mark = "ok" if c.get("ok") else f"failed (exit {c.get('exit_code')})"
-            lines.append(f"- [{c.get('tool')}] {str(c.get('command') or '')[:200]} -> {mark}")
+            how = (f", as root: {c['root']}" if c.get("root")
+                   else ", approved by the user" if c.get("approved") else "")
+            lines.append(f"- [{c.get('tool')}] {str(c.get('command') or '')[:200]} -> {mark}{how}")
         parts.append("Commands:\n" + "\n".join(lines))
+        clicks = sum(1 for c in commands if c.get("approved"))
+        root_clicks = sum(1 for c in commands if c.get("root") == "approved")
+        failed = sum(1 for c in commands if not c.get("ok"))
+        parts.append(f"Effort: {len(commands)} commands, {failed} failed, {clicks} needed the user's "
+                     f"approval ({root_clicks} of them root commands).")
+    if report.get("failures"):
+        parts.append("Repeated failures:\n" + "\n".join(f"- {f}" for f in report["failures"][:10]))
     return "\n\n".join(parts)[:EXTRACT_REPORT_CHARS]
 
 
@@ -151,9 +191,44 @@ class CreatorMemory:
         except Exception:
             logger.warning("Creator: could not load memories for the job", exc_info=True)
             return []
-        return [m for m in preface
+        msgs = [m for m in preface
                 if m.get("role") != "system"
                 and str((m.get("metadata") or {}).get("source", "")).startswith("saved memory")]
+        lessons = self.lessons_for(task, owner, already=" ".join(str(m.get("content", "")) for m in msgs))
+        if lessons:
+            from src.prompt_security import untrusted_context_message
+            msgs.append(untrusted_context_message(
+                "saved memory: creator lessons",
+                "Lessons from earlier Creator jobs on this machine (learned by doing; "
+                "use them to avoid retries and unneeded root approvals):\n"
+                + "\n".join(f"- {t}" for t in lessons)))
+        return msgs
+
+    def lessons_for(self, task: str, owner: Optional[str], already: str = "") -> List[str]:
+        """The owner's Creator lessons that match the task, best first,
+        leaving out any the memory block already has."""
+        if self.memory_manager is None:
+            return []
+        try:
+            entries = [e for e in self.memory_manager.load(owner=owner or None)
+                       if e.get("category") == LESSON_CATEGORY]
+        except Exception:
+            return []
+        if not entries:
+            return []
+        picked = []
+        retrieve = getattr(self.chat_processor, "_hybrid_retrieve", None)
+        if callable(retrieve):
+            try:
+                picked = retrieve(task, entries, k=MAX_LESSONS_IN)
+            except Exception:
+                picked = []
+        if not picked:
+            words = set(re.findall(r"[a-z0-9_.-]{3,}", task.lower()))
+            scored = sorted(((len(words & set(re.findall(r"[a-z0-9_.-]{3,}", e["text"].lower()))), e)
+                             for e in entries), key=lambda x: -x[0])
+            picked = [e for score, e in scored if score > 0][:MAX_LESSONS_IN]
+        return [e["text"] for e in picked if e.get("text") and e["text"] not in already]
 
     # -- out of a job --------------------------------------------------------
 
@@ -163,7 +238,7 @@ class CreatorMemory:
         """Everything a job leaves behind. Never raises; returns what it did
         (for the job's audit log)."""
         prefs = _prefs(owner)
-        out: Dict[str, Any] = {"summary": None, "facts": 0, "skill": None}
+        out: Dict[str, Any] = {"summary": None, "facts": 0, "lessons": 0, "skill": None}
         if self.memory_manager is None or not prefs.get("memory_enabled", True):
             out["skipped"] = "memory off"
         else:
@@ -173,11 +248,16 @@ class CreatorMemory:
                 out["summary"] = self.save_memory(job_summary(job_id, report), owner, job_id, per_job=True)
             except Exception:
                 logger.warning("Creator: could not save the job's memory", exc_info=True)
-            if report.get("status") == "done" and prefs.get("auto_memory", True):
+            # Facts only from a finished job; lessons from any job that did
+            # something (a failure teaches too).
+            finished = report.get("status") == "done"
+            if prefs.get("auto_memory", True) and (finished or report.get("commands")):
                 try:
-                    out["facts"] = await self.extract_facts(job_id, owner, report, endpoint_url, model, headers)
+                    facts, lessons = await self.extract_knowledge(
+                        job_id, owner, report, endpoint_url, model, headers, facts=finished)
+                    out["facts"], out["lessons"] = facts, lessons
                 except Exception:
-                    logger.warning("Creator: fact extraction failed", exc_info=True)
+                    logger.warning("Creator: fact/lesson extraction failed", exc_info=True)
         if (self.skills_manager is not None and report.get("status") == "done"
                 and prefs.get("auto_skills", True)
                 and (tool_calls >= SKILL_MIN_COMMANDS or rounds >= 2)):
@@ -224,29 +304,46 @@ class CreatorMemory:
             pass
         return entry["id"]
 
-    async def extract_facts(self, job_id, owner, report, endpoint_url, model, headers) -> int:
+    async def extract_knowledge(self, job_id, owner, report, endpoint_url, model, headers,
+                                facts: bool = True):
+        """Facts (if `facts`) and lessons from the report; returns how many of
+        each were saved."""
         from services.memory.memory_extractor import _parse_extraction_json
         from src.llm_core import llm_call_async
         url, mdl, hdrs = self._task_endpoint(endpoint_url, model, headers, owner)
         if not url or not mdl:
-            return 0
+            return 0, 0
         raw = await llm_call_async(url, mdl, [
-            {"role": "system", "content": FACTS_SYSTEM_PROMPT},
+            {"role": "system", "content": knowledge_prompt(facts)},
             {"role": "user", "content": "Job report:\n\n" + report_text(report)
-             + "\n\nReturn the JSON array of durable facts now (or [] if none)."},
+             + "\n\nReturn the JSON array now (or [] if nothing is worth keeping)."},
         ], temperature=0.1, max_tokens=2048, headers=hdrs)
-        added = 0
-        for fact in (_parse_extraction_json(raw) or [])[:MAX_FACTS]:
-            text = fact.get("text", "") if isinstance(fact, dict) else str(fact)
-            category = fact.get("category", "fact") if isinstance(fact, dict) else "fact"
-            if category not in ("fact", "project", "preference"):
-                category = "fact"
-            text = text.strip()
+        n_facts = n_lessons = 0
+        for item in (_parse_extraction_json(raw) or []):
+            text = (item.get("text", "") if isinstance(item, dict) else str(item)).strip()
+            category = item.get("category", "fact") if isinstance(item, dict) else "fact"
             if len(text) < 8 or len(text) > 300:
                 continue
+            if category == LESSON_CATEGORY:
+                if n_lessons >= MAX_LESSONS:
+                    continue
+                if not text.startswith(LESSON_PREFIX):
+                    text = LESSON_PREFIX + text
+                if self.save_memory(text, owner, job_id, category=LESSON_CATEGORY):
+                    n_lessons += 1
+                continue
+            if not facts or n_facts >= MAX_FACTS:
+                continue
+            if category not in ("fact", "project", "preference"):
+                category = "fact"
             if self.save_memory(text, owner, job_id, category=category):
-                added += 1
-        return added
+                n_facts += 1
+        return n_facts, n_lessons
+
+    async def extract_facts(self, job_id, owner, report, endpoint_url, model, headers) -> int:
+        """Facts and lessons from a finished job; returns the number of facts."""
+        facts, _ = await self.extract_knowledge(job_id, owner, report, endpoint_url, model, headers)
+        return facts
 
     async def extract_skill(self, job_id, owner, report, endpoint_url, model, headers,
                             tool_calls: int, rounds: int) -> Optional[str]:
