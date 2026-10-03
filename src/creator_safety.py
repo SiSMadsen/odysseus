@@ -168,12 +168,17 @@ def _acts_on_nothing(tool_name: Any) -> bool:
     return caps.known and caps.effects <= {ToolEffect.USER_INTERACTION}
 
 
-def make_protected_action_check(paths: Iterable[str]) -> Optional[Callable[[Any, Any], Optional[str]]]:
+def make_protected_action_check(paths: Iterable[str], from_settings: Iterable[str] = (),
+                                always: Iterable[str] = ()
+                                ) -> Optional[Callable[[Any, Any], Optional[str]]]:
     """A check for ToolRunSecurityContext.protected_action_check, or None when
-    nothing is protected. Matches a protected path anywhere in the tool input
+    nothing is protected. `from_settings` are the paths that came from the
+    admin's list, `always` the secret files every run protects; the message
+    says which, and for the first where to change it. Matches a protected path anywhere in the tool input
     as a whole path component: "/etc" matches "cat /etc/passwd" but not
     "/etcetera" or "/home/x/etc". This is a tripwire for honest mistakes, not
     a sandbox: a command can reach a path without spelling it out."""
+    settings_paths, always_paths = set(from_settings), set(always)
     compiled = []
     for path in paths:
         norm = path.rstrip("/") or "/"
@@ -197,9 +202,15 @@ def make_protected_action_check(paths: Iterable[str]) -> Optional[Callable[[Any,
                 text = str(content)
         for path, rx in compiled:
             if rx.search(text or ""):
+                if path in settings_paths:
+                    where = " (from your protected paths: Settings > Secrets > Creator limits)"
+                elif path in always_paths:
+                    where = " (always protected: it holds the app's secrets)"
+                else:
+                    where = ""
                 return (
                     f"Creator mode needs your OK before {tool_name} touches the "
-                    f"protected path {path}."
+                    f"protected path {path}{where}."
                 )
         return None
 

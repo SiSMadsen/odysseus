@@ -125,6 +125,9 @@ def setup_creator_routes(creator_manager: CreatorManager) -> APIRouter:
         # check during this run. Off by default. Protected paths and the
         # secret switch still apply.
         approve_untrusted: bool = False
+        # Follow up on an earlier job of yours that has ended: the new job is
+        # given that job's task and report before its own task.
+        follow_up_of: Optional[str] = None
 
     @router.post("/api/creator/start")
     async def creator_start(body: CreatorStartRequest, request: Request):
@@ -133,6 +136,11 @@ def setup_creator_routes(creator_manager: CreatorManager) -> APIRouter:
         task = body.task.strip()
         if not task:
             raise HTTPException(400, "Task is empty")
+        earlier = None
+        if body.follow_up_of:
+            earlier = _owned_job(body.follow_up_of, user)
+            if earlier["status"] in ACTIVE_STATUSES:
+                raise HTTPException(400, "That job is still running. Follow up once it has ended.")
         ep_url, ep_model, ep_headers = _resolve_creator_endpoint(user, body.endpoint_id, body.model)
 
         disabled = privilege_disabled_tools(_get_privileges(request, user))
@@ -152,6 +160,7 @@ def setup_creator_routes(creator_manager: CreatorManager) -> APIRouter:
                 max_minutes=body.max_minutes,
                 protected_paths=protected_paths_from_settings(),
                 approve_untrusted=body.approve_untrusted,
+                follow_up=earlier,
             )
         except CreatorBusyError as e:
             # Don't reveal another user's job id; the owner can find their own.
@@ -163,6 +172,7 @@ def setup_creator_routes(creator_manager: CreatorManager) -> APIRouter:
             "model": ep_model,
             "max_minutes": job.get("max_minutes"),
             "approve_untrusted": body.approve_untrusted,
+            "follow_up_of": earlier["id"] if earlier else None,
         }
 
     @router.get("/api/creator/jobs")
@@ -196,6 +206,8 @@ def setup_creator_routes(creator_manager: CreatorManager) -> APIRouter:
             "notes": (state.get("notes") or [])[-20:],
             "events": _events_after(events, max(0, since)),
             "has_report": bool(job.get("report")),
+            # The earlier job this one follows up on, if any.
+            "follow_up_of": state.get("follow_up_of"),
         }
 
     class CreatorResumeRequest(BaseModel):

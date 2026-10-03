@@ -317,3 +317,22 @@ def test_root_switch_is_admin_only_and_uses_the_root_routes():
     assert src.count("_rootStart();") == 1 and src.count("_rootStop();") == 1
     # The code is never kept by the window beyond the input box.
     assert "localStorage" not in src.split("// ── Root switch")[1].split("// ── Live stream")[0]
+
+
+@needs_node
+def test_first_line_for_labels():
+    out = _run(textwrap.dedent(f"""
+        const v = await import('{_VIEW}');
+        console.log(JSON.stringify([v.firstLine('\\n  Build a page \\nmore'), v.firstLine(''), v.firstLine(null),
+                                    v.firstLine('x'.repeat(300)).length]));
+    """))
+    assert out == ["Build a page", "", "", 200]
+
+
+def test_follow_up_button_sends_follow_up_of():
+    src = _PANEL.read_text()
+    assert "text: 'Follow up'" in src
+    assert "showNewJob({ id: status.job_id, task: status.task })" in src
+    assert "if (_followUp) body.follow_up_of = _followUp.id;" in src
+    # "+ New job" starts a plain job (not the click event as a follow-up).
+    assert "newBtn.addEventListener('click', () => showNewJob());" in src

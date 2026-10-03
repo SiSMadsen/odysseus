@@ -197,6 +197,33 @@ class CreatorNotPausedError(CreatorResumeError):
     """Resume sent to a job that isn't waiting (or is already resuming)."""
 
 
+# How much of the earlier job's report a follow-up job is given.
+FOLLOW_UP_REPORT_CHARS = 12_000
+
+
+def follow_up_brief(earlier: dict) -> str:
+    """What a follow-up job is told about the job it follows up, put before
+    its own task. The earlier job's audit log is out of the agent's reach (it
+    lives in data/, Phase 5a), so its report is the hand-over: it has what was
+    done, the exact commands and where backups were left. Stored reports are
+    already redacted."""
+    report = (earlier.get("report") or "").strip() or "(That job wrote no report.)"
+    if len(report) > FOLLOW_UP_REPORT_CHARS:
+        report = report[:FOLLOW_UP_REPORT_CHARS] + "\n[... the rest of the report was cut]"
+    return (
+        "[Creator mode — this job follows up on an earlier Creator job]\n"
+        f"The earlier job, {earlier.get('id')}, ended as \"{earlier.get('status')}\". Its task was:\n"
+        f"{(earlier.get('task') or '').strip()}\n\n"
+        "Its report is below: what it did, the exact commands it ran, and where it left "
+        "backups. Its audit log isn't readable with your tools, so this report is what you have. "
+        "Things may have changed since it ran: check the current state before you act on it.\n\n"
+        "--- earlier job's report ---\n"
+        f"{report}\n"
+        "--- end of the earlier job's report ---\n\n"
+        "The task for this job (the follow-up):\n"
+    )
+
+
 def is_valid_job_id(job_id: str) -> bool:
     return isinstance(job_id, str) and bool(_JOB_ID_RE.fullmatch(job_id))
 
@@ -648,6 +675,7 @@ class CreatorManager:
             "gate_bypassed": live["gate_bypassed"],
             "loaded_tools": sorted(live["loaded_tools"]),
             "deadline_at": live["deadline_at"],
+            "follow_up_of": live.get("follow_up_of"),
         }
 
     # ------------------------------------------------------------------
@@ -665,10 +693,13 @@ class CreatorManager:
         max_minutes: Optional[int] = None,
         protected_paths: Optional[List[str]] = None,
         approve_untrusted: bool = False,
+        follow_up: Optional[dict] = None,
     ) -> str:
         """`approve_untrusted` is "approve_job" given up front: the untrusted-
         content gate is lifted for the whole run, so it doesn't pause at its
-        first command. Protected paths and the secret switch still apply."""
+        first command. Protected paths and the secret switch still apply.
+        `follow_up` is an earlier finished job of the same owner (get_job's
+        dict): the new job is given its task and report before its own task."""
         # One job at a time; a paused job still holds its task, so it counts.
         # No await between this check and registering the task below.
         if self.running_job_id() is not None:
@@ -683,8 +714,9 @@ class CreatorManager:
         except Exception:
             logger.warning("Creator: could not load secrets for redaction", exc_info=True)
         # Always protect the files that hold every secret (tripwire).
-        protected_paths = list(protected_paths or []) + [
-            p for p in secret_store_tripwire_paths() if p not in (protected_paths or [])
+        user_protected = list(protected_paths or [])
+        protected_paths = user_protected + [
+            p for p in secret_store_tripwire_paths() if p not in user_protected
         ]
         job_id = new_job_id()
         started = utcnow_naive()
@@ -709,6 +741,7 @@ class CreatorManager:
             "task": task, "model": model, "max_minutes": minutes,
             "protected_paths": list(protected_paths),
             "approve_untrusted": bool(approve_untrusted),
+            "follow_up_of": (follow_up or {}).get("id"),
         })
         from datetime import timedelta
         self._live[job_id] = {
@@ -724,7 +757,12 @@ class CreatorManager:
             "tainted": False, "gate_bypassed": bool(approve_untrusted),
             "loaded_tools": set(),
             "pause": None, "resume_event": None, "resume_payload": None,
-            "path_check": make_protected_action_check(protected_paths),
+            "path_check": make_protected_action_check(
+                protected_paths, from_settings=user_protected,
+                always=[p for p in protected_paths if p not in user_protected]),
+            "user_protected_paths": user_protected,
+            "follow_up_of": (follow_up or {}).get("id"),
+            "follow_up_task": (follow_up or {}).get("task") or "",
             # Phase 6b: set at job start when the host helper answers.
             "host_available": False, "host_all_approved": False,
         }
@@ -742,6 +780,9 @@ class CreatorManager:
 
         live["protected_check"] = gate
 
+        # The model is given the follow-up brief before the task; the job's
+        # stored task (history, report) stays what the user wrote.
+        live["prompt_prefix"] = follow_up_brief(follow_up) if follow_up else ""
         bg = asyncio.create_task(self._run(
             job_id, task, endpoint_url, model, headers or {}, owner,
             set(disabled_tools or ()), minutes,
@@ -857,6 +898,8 @@ class CreatorManager:
         max_minutes: int,
     ) -> None:
         live = self._live[job_id]
+        # What the model is given as the task: a follow-up job's brief first.
+        prompt_task = live.get("prompt_prefix", "") + task
         redactor: Redactor = live["redactor"]
         audit: AuditLog = live["audit"]
         events: List[dict] = live["events"]
@@ -1277,7 +1320,7 @@ class CreatorManager:
                           "report and a STATUS line."]
             msgs = [
                 {"role": "system", "content": system_prompt()},
-                {"role": "user", "content": task},
+                {"role": "user", "content": prompt_task},
             ]
             if previous_text:
                 msgs.append({"role": "assistant", "content": redactor.known_text(_tail(previous_text, 4000))})
@@ -1289,10 +1332,17 @@ class CreatorManager:
             return msgs
 
         async def drive() -> None:
+            if live.get("follow_up_of"):
+                first = (live.get("follow_up_task") or "").strip().split("\n")[0][:150]
+                add_note(f"Follow-up of job {live['follow_up_of']}: {first}", "auto")
+            if live.get("user_protected_paths"):
+                add_note("Protected paths for this job (Settings > Secrets > Creator limits): "
+                         + ", ".join(live["user_protected_paths"])
+                         + ". Each action touching one asks you, every time.", "auto")
             await probe_host()
             messages = [
                 {"role": "system", "content": system_prompt()},
-                {"role": "user", "content": task},
+                {"role": "user", "content": prompt_task},
             ]
             while True:
                 seg = await run_segment(messages)

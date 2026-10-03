@@ -139,7 +139,8 @@ export function openPanel(jobId) {
     selectJob(jobId);
     return;
   }
-  showNewJob();
+  // An unsent follow-up survives closing the window, like an unsent task.
+  showNewJob(_followUp);
   // With a job running or paused, open on it rather than on "New job" —
   // unless you've already clicked somewhere or started typing a task.
   const token = _viewToken;
@@ -199,7 +200,7 @@ function _buildPane(pane) {
   ]);
 
   const newBtn = make('button', { type: 'button', class: 'creator-new-btn', text: '+ New job' });
-  newBtn.addEventListener('click', showNewJob);
+  newBtn.addEventListener('click', () => showNewJob());
   const history = make('aside', { class: 'creator-history', 'aria-label': 'Creator jobs' }, [
     newBtn,
     make('ul', { id: 'creator-job-list', class: 'creator-job-list', role: 'listbox' }),
@@ -257,6 +258,7 @@ function _buildComposer() {
   });
 
   return make('div', { id: 'creator-composer', class: 'creator-composer' }, [
+    make('div', { id: 'creator-follow-up', class: 'creator-follow-up', hidden: true }),
     task,
     make('div', { class: 'creator-options' }, [
       make('label', { class: 'creator-option', title: 'Which of your endpoints runs the job. Default uses your default (or chat) model.' }, [
@@ -402,17 +404,46 @@ function _hideHistoryOnMobile() {
 
 // ── New job ────────────────────────────────────────────────────────────
 
-export function showNewJob() {
+// The job a new task follows up on ({ id, task }), or null. Set by a finished
+// job's "Follow up" button; "+ New job" clears it.
+let _followUp = null;
+
+function _renderFollowUp() {
+  const box = byId('creator-follow-up');
+  if (!box) return;
+  box.hidden = !_followUp;
+  if (!_followUp) { box.replaceChildren(); return; }
+  const clear = make('button', { type: 'button', class: 'creator-follow-up-clear', text: '✕',
+    title: 'Start a separate job instead', 'aria-label': 'Not a follow-up' });
+  clear.addEventListener('click', () => { _followUp = null; _renderFollowUp(); _updateNewJobTitle(); });
+  box.replaceChildren(
+    make('span', { class: 'creator-follow-up-label', text: 'Following up on' }),
+    make('span', { class: 'creator-follow-up-task', text: view.firstLine(_followUp.task) || _followUp.id, title: _followUp.task || '' }),
+    clear,
+  );
+}
+
+function _updateNewJobTitle() {
+  if (_selectedId !== null) return;
+  byId('creator-job-head')?.replaceChildren(
+    make('div', { class: 'creator-job-title', text: _followUp ? 'Follow-up job' : 'New job' }),
+  );
+}
+
+export function showNewJob(followUp = null) {
+  _followUp = followUp && followUp.id ? { id: followUp.id, task: followUp.task || '' } : null;
   _viewToken++;
   _stopLive();
   _view = null;
   _selectedId = null;
   _renderHistory();
   _hideHistoryOnMobile();
-  byId('creator-job-head')?.replaceChildren(
-    make('div', { class: 'creator-job-title', text: 'New job' }),
-  );
-  byId('creator-timeline')?.replaceChildren(make('div', { class: 'creator-intro' }, [
+  _updateNewJobTitle();
+  _renderFollowUp();
+  byId('creator-timeline')?.replaceChildren(make('div', { class: 'creator-intro' }, _followUp ? [
+    make('p', { text: 'Say what to do next. Creator is given the earlier job\'s task and report (what it did, the exact commands, where it left backups) before your new task.' }),
+    make('p', { text: 'For example: "Undo what that job did", or "Also add the uptime to the page".' }),
+  ] : [
     make('p', { text: 'Give Creator a task on this server. It works through it, tries other approaches when something fails, and asks you only when it\'s truly blocked. When it finishes, it writes a report.' }),
     make('p', { text: 'One job runs at a time. It stops at its time limit, and you can stop it at any point.' }),
   ]));
@@ -443,6 +474,7 @@ async function _handleStart() {
   const model = byId('creator-model')?.value || '';
   if (endpointId) body.endpoint_id = endpointId;
   if (model) body.model = model;
+  if (_followUp) body.follow_up_of = _followUp.id;
   _saveOptions({ ..._loadOptions(), max_minutes: body.max_minutes || '' });
 
   if (startBtn) startBtn.disabled = true;
@@ -453,6 +485,8 @@ async function _handleStart() {
     _draftTask = '';
     const untrusted = byId('creator-approve-untrusted');
     if (untrusted) untrusted.checked = false;
+    _followUp = null;
+    _renderFollowUp();
     _setComposerMessage('');
     await refreshHistory();
     selectJob(out.job_id);
@@ -533,6 +567,20 @@ function _renderHead() {
     make('span', { class: `creator-status-pill status-${status.status}`, text: view.statusLabel(status.status) }),
     make('span', { class: 'creator-job-meta', text: meta }),
   ]);
+  if (status.follow_up_of) {
+    const earlier = make('button', { type: 'button', class: 'creator-link-btn', text: `follow-up of ${status.follow_up_of}`,
+      title: 'Open the job this one follows up on' });
+    earlier.addEventListener('click', () => selectJob(status.follow_up_of));
+    sub.appendChild(earlier);
+  }
+  if (!active) {
+    const followUp = make('button', {
+      type: 'button', class: 'creator-follow-up-btn', text: 'Follow up',
+      title: 'Start a new job that is given this job\'s task and report first (e.g. "undo what it did").',
+    });
+    followUp.addEventListener('click', () => showNewJob({ id: status.job_id, task: status.task }));
+    sub.appendChild(followUp);
+  }
   if (active) {
     sub.appendChild(make('span', { id: 'creator-time-left', class: 'creator-time-left' }));
     sub.appendChild(make('span', { id: 'creator-live-state', class: 'creator-live-state', role: 'status' }));

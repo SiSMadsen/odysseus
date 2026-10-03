@@ -338,3 +338,8 @@ export function rootCode(text) {
   const code = String(text || '').replace(/\s+/g, '');
   return /^\d{6}$/.test(code) ? code : '';
 }
+
+/** The first non-empty line of a task, trimmed (for one-line labels). */
+export function firstLine(text) {
+  return (String(text || '').split('\n').map(l => l.trim()).find(Boolean) || '').slice(0, 200);
+}

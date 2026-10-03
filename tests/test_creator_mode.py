@@ -375,7 +375,7 @@ ALLOWED = {"alice": {**DEFAULT_PRIVILEGES, "can_use_creator": True},
 def test_start_requires_privilege(routed):
     _, router = routed
     start = _route(router, "/api/creator/start", "POST")
-    body = SimpleNamespace(task="do it", endpoint_id=None, model=None, max_minutes=None, approve_untrusted=False)
+    body = SimpleNamespace(task="do it", endpoint_id=None, model=None, max_minutes=None, approve_untrusted=False, follow_up_of=None)
     with pytest.raises(HTTPException) as exc:
         asyncio.run(start(body=body, request=_request("carol", {})))
     assert exc.value.status_code == 403
@@ -384,7 +384,7 @@ def test_start_requires_privilege(routed):
 def test_privilege_check_fails_closed_when_key_missing(routed):
     _, router = routed
     start = _route(router, "/api/creator/start", "POST")
-    body = SimpleNamespace(task="do it", endpoint_id=None, model=None, max_minutes=None, approve_untrusted=False)
+    body = SimpleNamespace(task="do it", endpoint_id=None, model=None, max_minutes=None, approve_untrusted=False, follow_up_of=None)
     legacy = {k: v for k, v in DEFAULT_PRIVILEGES.items() if k != "can_use_creator"}
     with pytest.raises(HTTPException) as exc:
         asyncio.run(start(body=body, request=_request("dave", {"dave": legacy})))
@@ -394,7 +394,7 @@ def test_privilege_check_fails_closed_when_key_missing(routed):
 def test_internal_tool_user_cannot_start(routed):
     _, router = routed
     start = _route(router, "/api/creator/start", "POST")
-    body = SimpleNamespace(task="do it", endpoint_id=None, model=None, max_minutes=None, approve_untrusted=False)
+    body = SimpleNamespace(task="do it", endpoint_id=None, model=None, max_minutes=None, approve_untrusted=False, follow_up_of=None)
     with pytest.raises(HTTPException) as exc:
         asyncio.run(start(body=body, request=_request(INTERNAL_TOOL_USER, ALLOWED)))
     assert exc.value.status_code == 403
@@ -408,7 +408,7 @@ def test_start_status_report_and_owner_scope(routed):
     stop = _route(router, "/api/creator/stop/{job_id}", "POST")
 
     async def run():
-        out = await start(body=SimpleNamespace(task="do it", endpoint_id=None, model=None, max_minutes=None, approve_untrusted=False),
+        out = await start(body=SimpleNamespace(task="do it", endpoint_id=None, model=None, max_minutes=None, approve_untrusted=False, follow_up_of=None),
                           request=_request("alice", ALLOWED))
         job_id = out["job_id"]
         await _wait_finished(mgr, job_id)
@@ -458,7 +458,7 @@ def test_second_start_is_409_while_a_job_runs(session_factory, monkeypatch):
     monkeypatch.setattr("src.settings.get_setting", lambda key, default=None: default)
     mgr = CreatorManager(session_factory=session_factory, agent_loop=_fake_loop([], hang=True))
     start = _route(creator_routes.setup_creator_routes(mgr), "/api/creator/start", "POST")
-    body = SimpleNamespace(task="do it", endpoint_id=None, model=None, max_minutes=5, approve_untrusted=False)
+    body = SimpleNamespace(task="do it", endpoint_id=None, model=None, max_minutes=5, approve_untrusted=False, follow_up_of=None)
 
     async def run():
         out = await start(body=body, request=_request("alice", ALLOWED))
@@ -510,3 +510,122 @@ def test_creator_settings_have_defaults():
 def test_app_api_blocks_creator_routes():
     from src.tools.system import _APP_API_BLOCKLIST_PREFIXES
     assert any("/api/creator/start".startswith(p) for p in _APP_API_BLOCKLIST_PREFIXES)
+
+
+# ---------------------------------------------------------------------------
+# Follow-up jobs, and where a protected path comes from (after the live run of
+# 2026-10-02: /etc left in the settings made "allow all" jobs keep asking).
+# ---------------------------------------------------------------------------
+
+def _start_body(task="do it", follow_up_of=None):
+    return SimpleNamespace(task=task, endpoint_id=None, model=None, max_minutes=None,
+                           approve_untrusted=False, follow_up_of=follow_up_of)
+
+
+def test_follow_up_job_is_given_the_earlier_task_and_report(session_factory, monkeypatch):
+    calls = []
+    monkeypatch.setattr(creator_routes, "require_user", lambda request: request.state.current_user)
+    monkeypatch.setattr(creator_routes, "_resolve_creator_endpoint",
+                        lambda user, endpoint_id, model: ("http://x/v1/chat/completions", "m", {}))
+    monkeypatch.setattr("src.settings.get_setting", lambda key, default=None: default)
+    mgr = CreatorManager(session_factory=session_factory,
+                         agent_loop=_fake_loop([_sse({"delta": "Made status.html. STATUS: DONE"})], calls))
+    router = creator_routes.setup_creator_routes(mgr)
+    start = _route(router, "/api/creator/start", "POST")
+    status = _route(router, "/api/creator/status/{job_id}", "GET")
+
+    async def run():
+        first = await start(body=_start_body("Build a status page"), request=_request("alice", ALLOWED))
+        await _wait_finished(mgr, first["job_id"])
+        # Someone else's job, or one that doesn't exist: 404, nothing starts.
+        for user, jid in (("bob", first["job_id"]), ("alice", "cr-000000000000")):
+            with pytest.raises(HTTPException) as exc:
+                await start(body=_start_body("undo", jid), request=_request(user, ALLOWED))
+            assert exc.value.status_code == 404
+        second = await start(body=_start_body("Undo what that job did", first["job_id"]),
+                             request=_request("alice", ALLOWED))
+        await _wait_finished(mgr, second["job_id"])
+        st = await status(job_id=second["job_id"], request=_request("alice", ALLOWED), since=0)
+        return first, second, st
+
+    first, second, st = asyncio.run(run())
+    assert len(calls) == 2
+    assert second["follow_up_of"] == first["job_id"] and st["follow_up_of"] == first["job_id"]
+    prompt = next(m["content"] for m in calls[1]["messages"] if m["role"] == "user")
+    assert prompt.startswith("[Creator mode — this job follows up on an earlier Creator job]")
+    assert first["job_id"] in prompt and "Build a status page" in prompt
+    assert "Made status.html" in prompt          # the earlier report
+    assert prompt.endswith("Undo what that job did")
+    # The stored task is what the user wrote, not the brief.
+    job = mgr.get_job(second["job_id"])
+    assert job["task"] == "Undo what that job did"
+    assert any(n["text"].startswith(f"Follow-up of job {first['job_id']}: Build a status page")
+               for n in job["state"]["notes"])
+    # The first job had no follow-up.
+    assert next(m["content"] for m in calls[0]["messages"] if m["role"] == "user") == "Build a status page"
+
+
+def test_follow_up_of_a_running_job_is_refused(session_factory, monkeypatch):
+    monkeypatch.setattr(creator_routes, "require_user", lambda request: request.state.current_user)
+    monkeypatch.setattr(creator_routes, "_resolve_creator_endpoint",
+                        lambda user, endpoint_id, model: ("http://x/v1/chat/completions", "m", {}))
+    monkeypatch.setattr("src.settings.get_setting", lambda key, default=None: default)
+    mgr = CreatorManager(session_factory=session_factory, agent_loop=_fake_loop([], hang=True))
+    start = _route(creator_routes.setup_creator_routes(mgr), "/api/creator/start", "POST")
+
+    async def run():
+        first = await start(body=_start_body(), request=_request("alice", ALLOWED))
+        try:
+            with pytest.raises(HTTPException) as exc:
+                await start(body=_start_body("undo", first["job_id"]), request=_request("alice", ALLOWED))
+            return exc.value
+        finally:
+            mgr.stop_job(first["job_id"])
+            await _wait_finished(mgr, first["job_id"])
+
+    err = asyncio.run(run())
+    assert err.status_code == 400 and "still running" in err.detail
+
+
+def test_follow_up_brief_cuts_a_long_report():
+    brief = creator_mode.follow_up_brief({"id": "cr-1", "status": "done", "task": "t",
+                                          "report": "x" * (creator_mode.FOLLOW_UP_REPORT_CHARS + 500)})
+    assert "[... the rest of the report was cut]" in brief
+    assert "(That job wrote no report.)" in creator_mode.follow_up_brief({"id": "cr-1", "status": "stopped"})
+
+
+def test_protected_path_message_says_where_the_path_comes_from(session_factory):
+    calls = []
+
+    async def run():
+        mgr = CreatorManager(session_factory=session_factory, agent_loop=_fake_loop([], calls))
+        job = mgr.start_job("t", "u", "m", protected_paths=["/etc"])
+        await _wait_finished(mgr, job)
+        return mgr.get_job(job)
+
+    job = asyncio.run(run())
+    check = calls[0]["protected_action_check"]
+    assert check("bash", "cat /etc/hostname").endswith(
+        "the protected path /etc (from your protected paths: Settings > Secrets > Creator limits).")
+    assert check("bash", "cat .app_key").endswith("(always protected: it holds the app's secrets).")
+    # The job says up front which paths will ask.
+    assert any(n["text"].startswith("Protected paths for this job (Settings > Secrets > Creator limits): /etc.")
+               for n in job["state"]["notes"])
+    # A check built without the lists keeps the plain message.
+    from src.creator_safety import make_protected_action_check
+    assert make_protected_action_check(["/etc"])("bash", "ls /etc").endswith("the protected path /etc.")
+
+
+def test_follow_up_report_asks_only_the_new_task(session_factory):
+    async def run():
+        mgr = CreatorManager(session_factory=session_factory,
+                             agent_loop=_fake_loop([_sse({"delta": "ok. STATUS: DONE"})]))
+        first = mgr.start_job("Build a status page", "u", "m")
+        await _wait_finished(mgr, first)
+        second = mgr.start_job("Undo it", "u", "m", follow_up=mgr.get_job(first))
+        await _wait_finished(mgr, second)
+        return mgr.get_job(second)
+
+    job = asyncio.run(run())
+    asked = job["report"].split("## What was asked", 1)[1].split("##", 1)[0]
+    assert asked.strip() == "Undo it"
