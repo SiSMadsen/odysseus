@@ -8,6 +8,15 @@ Background and decisions: `docs/creator-plan.md`, Phase 6.
 Nothing in Odysseus installs, starts or changes this helper. You do every step
 below by hand, and you can read every file first.
 
+**Keeping it up to date:** after the first install (below, and "The root
+helper" further down), run `scripts/creator-upkeep.sh` from the `odysseus`
+folder whenever the code changes. It installs whichever helper files changed
+(restarting only those helpers), rebuilds the container, and checks
+everything, ending with a PASS/FAIL summary. `--check` changes nothing and
+only reports; `--no-rebuild` skips the rebuild. It never fetches code, and it
+doesn't do the first install (creating the `creator` user, the ACLs, the
+authenticator key): it tells you which of those is missing.
+
 ## Files
 
 | File | What it is |

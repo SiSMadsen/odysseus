@@ -16,6 +16,7 @@ Items marked **[CHECK]** are things not yet looked at, so their size isn't known
 - The route tests build start requests with `SimpleNamespace`. Adding a field to `CreatorStartRequest` means adding it to those bodies in `tests/test_creator_mode.py` and `tests/test_creator_phase2.py`.
 
 **After changing things**
+- One command does all of the below and checks it: `scripts/creator-upkeep.sh` (Phase 9a; `--check` only reports, `--no-rebuild` skips the rebuild). The manual steps, for reference:
 - Rebuild: `sudo docker compose up -d --build`, then reload the page twice (or Ctrl+Shift+R): the service worker serves the old page first.
 - After every rebuild, run the 5a check: `sudo docker compose exec -u odysseus odysseus python -m src.tool_user --check` (all PASS). It found that upstream startup code had silently undone the work folder's sharing; other upstream code can do the same.
 - The host helpers are not updated by a rebuild. After changing `host_helper/creator_helper.py` or `host_helper/root_helper.py`, copy it to `/opt/creator-helper/` or `/opt/creator-root/` and restart `creator-helper` or `creator-root-helper`. Both must use the Python standard library only (the host has no pip; Python 3.11).
@@ -359,7 +360,7 @@ Asked for after Phase 5: one script that applies and checks everything, and Crea
 3. **Chat can read Creator jobs:** memory as above, plus a read-only tool in normal chat that lists your Creator jobs and reads a job's report. It can't start, approve or stop jobs.
 4. **Skills from Creator jobs follow the Skills settings:** learned as drafts after a successful job, used like any learned skill (Brain > Skills: auto-approve and its confidence), marked as learned from Creator.
 
-- [ ] **9a. Upkeep script.**
+- [x] **9a. Upkeep script — BUILT** (2026-10-03): `scripts/creator-upkeep.sh`, run as you (it asks for sudo once). (1) the folder: branch, uncommitted changes (WARN), both helpers parse with the host's `/usr/bin/python3`, else it stops before installing anything; (2) host helper: installs `creator_helper.py`, its unit and the polkit rule where they differ (`cmp`), restarts it only then; checks the `creator` user and that it has no sudo, `/srv/creator-helper`, the unit verifies, running and enabled, the socket, the web-root ACL and Apache log ACLs (WARN); (3) root helper: the same for `root_helper.py` and its unit (a restart switches root off, and it says so), that the unit's `--odysseus-dir` is this folder, `/srv/creator-root` (root, 0700, ACL for uid 1000; fixed if wrong), the key (root, 0600), `fs.protected_hardlinks`, the switch answering on the control socket, and three watchdog verdicts (automatic / refused / approval; a check never switches root off); (4) `.env` has both overlays, rebuild, waits for the container; (5) inside it: the 5a check, and both helpers answer from the container. PASS / FIXED / WARN / FAIL per line, a summary, exit 0 only without FAIL. Tested here only as far as possible without root: `bash -n`, and a full `--check` run with a stand-in `sudo` (no script errors; the root-only checks fail as expected).
 - [ ] **9b. Memory in and out of Creator jobs, and the chat tool.**
 - [ ] **9c. Skills: matched on the task, learned from jobs.**
 
