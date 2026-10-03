@@ -38,7 +38,9 @@ sudo setfacl -R -m u:creator:rwX /var/www/html
 sudo setfacl -R -d -m u:creator:rwX /var/www/html
 #    b) read Apache's logs (not the adm group, which would open auth.log too)
 sudo setfacl -m u:creator:rx /var/log/apache2
-sudo setfacl -m u:creator:r /var/log/apache2/*
+#    (in a root shell: you can't list that folder, so your own shell can't
+#    expand the * and setfacl would get a literal "*")
+sudo sh -c 'setfacl -m u:creator:r /var/log/apache2/*'
 sudo setfacl -d -m u:creator:r /var/log/apache2
 #    c) start/reload/restart Apache
 sudo install -o root -g root -m 0644 host_helper/50-creator-apache.rules /etc/polkit-1/rules.d/
