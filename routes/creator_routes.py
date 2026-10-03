@@ -183,10 +183,26 @@ def setup_creator_routes(creator_manager: CreatorManager) -> APIRouter:
         }
 
     @router.get("/api/creator/jobs")
-    async def creator_jobs(request: Request, limit: int = 50):
-        """The caller's jobs, newest first: the Creator window's history."""
+    async def creator_jobs(request: Request, limit: int = 50, archived: bool = False):
+        """The caller's jobs, newest first: the Creator window's history.
+        Archived jobs only with `archived=true`; `archived_count` says how
+        many there are either way."""
         user = _require_creator_user(request)
-        return {"jobs": creator_manager.list_jobs(user, limit=limit)}
+        return {"jobs": creator_manager.list_jobs(user, limit=limit, include_archived=archived),
+                "archived_count": creator_manager.archived_count(user)}
+
+    class ArchiveRequest(BaseModel):
+        archived: bool = True
+
+    @router.post("/api/creator/archive/{job_id}")
+    async def creator_archive(job_id: str, body: ArchiveRequest, request: Request):
+        """Archive (or unarchive) one of your jobs that has ended."""
+        user = _require_creator_user(request)
+        job = _owned_job(job_id, user)
+        if job["status"] in ACTIVE_STATUSES:
+            raise HTTPException(400, "A running or paused job can't be archived. Stop it first.")
+        creator_manager.set_archived(job_id, body.archived)
+        return {"job_id": job_id, "archived": bool(body.archived)}
 
     @router.get("/api/creator/status/{job_id}")
     async def creator_status(job_id: str, request: Request, since: int = 0):
@@ -197,6 +213,8 @@ def setup_creator_routes(creator_manager: CreatorManager) -> APIRouter:
         state = job.get("state") or {}
         return {
             "job_id": job["id"],
+            "name": job.get("name"),
+            "archived": bool(job.get("archived")),
             "task": job["task"],
             "status": job["status"],
             "started_at": job["started_at"],

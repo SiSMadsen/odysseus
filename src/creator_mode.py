@@ -674,6 +674,8 @@ class CreatorManager:
                 "model": row.model,
                 "events": events,
                 "state": state,
+                "name": getattr(row, "name", None),
+                "archived": bool(getattr(row, "archived", False)),
             }
         finally:
             db.close()
@@ -686,21 +688,28 @@ class CreatorManager:
             job["max_minutes"] = live["max_minutes"]
         return job
 
-    def list_jobs(self, owner: str, limit: int = 50) -> List[dict]:
+    @staticmethod
+    def _owner_filter(q, owner: str):
+        # start_job stores an empty owner (auth off) as NULL.
+        return q.filter(CreatorJob.owner == owner) if owner else q.filter(CreatorJob.owner.is_(None))
+
+    def list_jobs(self, owner: str, limit: int = 50, include_archived: bool = False) -> List[dict]:
         """The owner's jobs, newest first, without events or report text (the
-        Creator window's history list)."""
+        Creator window's history list). Archived jobs only if asked."""
         limit = max(1, min(int(limit), MAX_LIST_JOBS))
         db = self._session_factory()
         try:
             q = db.query(CreatorJob.id, CreatorJob.task, CreatorJob.status, CreatorJob.started_at,
-                         CreatorJob.finished_at, CreatorJob.model, CreatorJob.report.isnot(None))
-            # start_job stores an empty owner (auth off) as NULL.
-            q = q.filter(CreatorJob.owner == owner) if owner else q.filter(CreatorJob.owner.is_(None))
+                         CreatorJob.finished_at, CreatorJob.model, CreatorJob.report.isnot(None),
+                         CreatorJob.name, CreatorJob.archived)
+            q = self._owner_filter(q, owner)
+            if not include_archived:
+                q = q.filter((CreatorJob.archived.is_(None)) | (CreatorJob.archived == False))  # noqa: E712
             rows = q.order_by(CreatorJob.started_at.desc()).limit(limit).all()
         finally:
             db.close()
         jobs = []
-        for job_id, task, status, started, finished, model, has_report in rows:
+        for job_id, task, status, started, finished, model, has_report, name, archived in rows:
             live = self._live.get(job_id)
             if live is not None and status in ACTIVE_STATUSES:
                 status = "paused" if live.get("pause") else "running"
@@ -712,8 +721,50 @@ class CreatorManager:
                 "finished_at": finished.isoformat() + "Z" if finished else None,
                 "model": model,
                 "has_report": bool(has_report),
+                "name": name,
+                "archived": bool(archived),
             })
         return jobs
+
+    def archived_count(self, owner: str) -> int:
+        db = self._session_factory()
+        try:
+            return self._owner_filter(db.query(CreatorJob.id), owner).filter(
+                CreatorJob.archived == True).count()  # noqa: E712
+        finally:
+            db.close()
+
+    def set_archived(self, job_id: str, archived: bool) -> None:
+        self._update(job_id, archived=bool(archived))
+
+    def _name_job(self, job_id: str, task: str, owner: str, endpoint_url: str, model: str, headers: dict) -> None:
+        """A short name for the job, from its task, in the background (the
+        task's first line stands in until then). A `named` event tells the
+        window."""
+        namer = getattr(self._memory, "name_job", None)
+        if namer is None:
+            return
+
+        async def go():
+            try:
+                name = await namer(task, owner, endpoint_url, model, headers)
+            except Exception:
+                logger.debug("Creator: naming the job failed", exc_info=True)
+                return
+            if not name:
+                return
+            self._update(job_id, name=name)
+            live = self._live.get(job_id)
+            if live is not None and live.get("add_event"):
+                live["add_event"]({"type": "named", "name": name})
+                live["name"] = name
+
+        try:
+            task_ = asyncio.get_running_loop().create_task(go())
+            self._after_tasks.add(task_)
+            task_.add_done_callback(self._after_tasks.discard)
+        except RuntimeError:
+            pass
 
     def is_running(self, job_id: str) -> bool:
         """True while the job's task is alive — running or paused."""
@@ -897,6 +948,7 @@ class CreatorManager:
         ))
         self._tasks[job_id] = bg
         bg.add_done_callback(lambda _t, jid=job_id: self._tasks.pop(jid, None))
+        self._name_job(job_id, task, owner, endpoint_url, model, headers or {})
         logger.info("Creator: started job %s (owner=%r, model=%s, limit=%dm)", job_id, owner, model, minutes)
         return job_id
 
@@ -927,13 +979,22 @@ class CreatorManager:
         return format_run_result(reply)
 
     def _memory_for(self, task: str, owner: str) -> List[dict]:
+        """The memories (and lessons) that match the task, and the pinned
+        operating notes (9g), given to every segment of the job."""
         if self._memory is None:
             return []
+        msgs = []
         try:
-            return self._memory.context_messages(task, owner)
+            msgs += self._memory.context_messages(task, owner)
         except Exception:
             logger.warning("Creator: could not load memories", exc_info=True)
-            return []
+        pinned = getattr(self._memory, "pinned_messages", None)
+        if pinned is not None:
+            try:
+                msgs += pinned(owner)
+            except Exception:
+                logger.warning("Creator: could not load the operating notes", exc_info=True)
+        return msgs
 
     def _remember(self, job_id: str, owner: str, report_data: dict, endpoint_url: str, model: str,
                   headers: dict, tool_calls: int, rounds: int) -> None:
@@ -1207,8 +1268,10 @@ class CreatorManager:
             add_event({"type": "note", "text": text, "source": source})
             audit.write({"at": note["at"], "type": "note", "text": text, "source": source})
 
-        # run_as_root (a manager method, outside this run) notes refusals too.
+        # run_as_root (a manager method, outside this run) notes refusals too,
+        # and naming (9g) adds its event.
         live["add_note"] = add_note
+        live["add_event"] = add_event
 
         def record_command(tool: str, content: Any, result: dict, approved: bool = False) -> None:
             """Exact command log, failure tracking and taint, for every tool
@@ -1681,8 +1744,16 @@ class CreatorManager:
                          + ". Each action touching one asks you, every time.", "auto")
             await probe_host()
             await probe_root()
-            if live["memory_messages"]:
-                add_note("Given your saved memories that match this task (as in chat).", "auto")
+            sources = [str((m.get("metadata") or {}).get("source", "")) for m in live["memory_messages"]]
+            given = []
+            if any(src.startswith("saved memory") and "lessons" not in src for src in sources):
+                given.append("your saved memories that match this task")
+            if any("creator lessons" in src for src in sources):
+                given.append("lessons from earlier jobs")
+            if any("operating notes" in src for src in sources):
+                given.append("Creator's operating notes for this server")
+            if given:
+                add_note("Given " + ", ".join(given) + ".", "auto")
             if live["host_available"] and live["host_all_approved"]:
                 add_note("All host commands are allowed for this job (chosen at start): "
                          "host_exec won't ask before each one.", "auto")

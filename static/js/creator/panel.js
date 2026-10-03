@@ -201,9 +201,12 @@ function _buildPane(pane) {
 
   const newBtn = make('button', { type: 'button', class: 'creator-new-btn', text: '+ New job' });
   newBtn.addEventListener('click', () => showNewJob());
+  const archivedBtn = make('button', { id: 'creator-archived-toggle', type: 'button', class: 'creator-archived-toggle', hidden: true });
+  archivedBtn.addEventListener('click', () => { _showArchived = !_showArchived; refreshHistory(); });
   const history = make('aside', { class: 'creator-history', 'aria-label': 'Creator jobs' }, [
     newBtn,
     make('ul', { id: 'creator-job-list', class: 'creator-job-list', role: 'listbox' }),
+    archivedBtn,
   ]);
 
   const main = make('section', { class: 'creator-main' }, [
@@ -361,11 +364,17 @@ function _setComposerMessage(text, isError) {
 
 // ── History ────────────────────────────────────────────────────────────
 
+// Archived jobs (9g) are left out of the history unless you show them.
+let _showArchived = false;
+let _archivedCount = 0;
+
 export async function refreshHistory() {
   const list = byId('creator-job-list');
   if (!list) return;
   try {
-    _jobs = (await api(`${API}/jobs?limit=100`)).jobs || [];
+    const out = await api(`${API}/jobs?limit=100${_showArchived ? '&archived=true' : ''}`);
+    _jobs = out.jobs || [];
+    _archivedCount = out.archived_count || 0;
   } catch (e) {
     list.replaceChildren(make('li', { class: 'creator-job-empty', text: `Couldn't load jobs: ${e.message}` }));
     return;
@@ -373,17 +382,25 @@ export async function refreshHistory() {
   _renderHistory();
 }
 
+function _renderArchivedToggle() {
+  const btn = byId('creator-archived-toggle');
+  if (!btn) return;
+  btn.hidden = !_archivedCount && !_showArchived;
+  btn.textContent = _showArchived ? 'Hide archived jobs' : `Show archived jobs (${_archivedCount})`;
+}
+
 function _renderHistory() {
   const list = byId('creator-job-list');
   if (!list) return;
+  _renderArchivedToggle();
   if (!_jobs.length) {
     list.replaceChildren(make('li', { class: 'creator-job-empty', text: 'No jobs yet.' }));
     return;
   }
   list.replaceChildren(..._jobs.map((job) => {
-    const firstLine = (job.task || '').split('\n')[0];
+    const firstLine = view.jobTitle(job);
     const item = make('li', {
-      class: 'creator-job-item' + (job.job_id === _selectedId ? ' selected' : ''),
+      class: 'creator-job-item' + (job.job_id === _selectedId ? ' selected' : '') + (job.archived ? ' archived' : ''),
       role: 'option', tabindex: '0', 'data-job-id': job.job_id,
       'aria-selected': job.job_id === _selectedId ? 'true' : 'false',
       title: job.task || '',
@@ -391,7 +408,7 @@ function _renderHistory() {
       make('span', { class: `creator-status-dot status-${job.status}`, title: view.statusLabel(job.status) }),
       make('span', { class: 'creator-job-text' }, [
         make('span', { class: 'creator-job-task', text: firstLine || '(no task)' }),
-        make('span', { class: 'creator-job-meta', text: `${view.statusLabel(job.status)} · ${view.relativeTime(job.started_at)}` }),
+        make('span', { class: 'creator-job-meta', text: `${view.statusLabel(job.status)} · ${view.relativeTime(job.started_at)}${job.archived ? ' · archived' : ''}` }),
       ]),
     ]);
     item.addEventListener('click', () => selectJob(job.job_id));
@@ -567,7 +584,7 @@ function _renderHead() {
   if (!head || !_view) return;
   const status = _view.status;
   const active = view.isActive(status.status);
-  const firstLine = (status.task || '').split('\n')[0];
+  const firstLine = view.jobTitle(status);
   const meta = [
     status.model,
     active ? '' : view.formatDuration(status.started_at, status.finished_at),
@@ -584,21 +601,23 @@ function _renderHead() {
     earlier.addEventListener('click', () => selectJob(status.follow_up_of));
     sub.appendChild(earlier);
   }
+  // A finished job's actions sit together (9g); their messages go below.
+  const msg = make('div', { id: 'creator-job-msg', class: 'creator-job-msg', role: 'status' });
+  const actions = make('div', { class: 'creator-job-actions' });
   if (!active) {
     const followUp = make('button', {
       type: 'button', class: 'creator-follow-up-btn', text: 'Follow up',
       title: 'Start a new job that is given this job\'s task and report first (e.g. "undo what it did").',
     });
     followUp.addEventListener('click', () => showNewJob({ id: status.job_id, task: status.task }));
-    sub.appendChild(followUp);
+    actions.appendChild(followUp);
   }
   if (status.status === 'done') {
-    // Learn a skill from this job now, and see why not if it doesn't (9e).
+    // Learn a skill from this job now, and see why not if it doesn't (9f).
     const learn = make('button', {
-      type: 'button', class: 'creator-follow-up-btn', text: 'Learn a skill',
+      id: 'creator-learn-btn', type: 'button', class: 'creator-follow-up-btn', text: 'Learn a skill',
       title: 'Turn what this job did into a reusable skill (Brain > Skills). Says why when it doesn\'t.',
     });
-    const msg = make('span', { id: 'creator-learn-msg', class: 'creator-job-meta', role: 'status' });
     learn.addEventListener('click', async () => {
       learn.disabled = true;
       msg.textContent = 'Learning…';
@@ -611,8 +630,30 @@ function _renderHead() {
         learn.disabled = false;
       }
     });
-    sub.appendChild(learn);
-    sub.appendChild(msg);
+    actions.appendChild(learn);
+  }
+  if (!active) {
+    const archive = make('button', {
+      type: 'button', class: 'creator-follow-up-btn', text: status.archived ? 'Unarchive' : 'Archive',
+      title: status.archived ? 'Show this job in the history again.' : 'Hide this job from the history (Show archived jobs brings it back).',
+    });
+    archive.addEventListener('click', async () => {
+      archive.disabled = true;
+      try {
+        const out = await api(`${API}/archive/${encodeURIComponent(status.job_id)}`, {
+          method: 'POST', body: JSON.stringify({ archived: !status.archived }),
+        });
+        status.archived = !!out.archived;
+        await refreshHistory();
+        _renderHead();
+        const m = byId('creator-job-msg');
+        if (m) m.textContent = status.archived ? 'Archived: hidden from the history.' : 'Back in the history.';
+      } catch (e) {
+        msg.textContent = e.message;
+        archive.disabled = false;
+      }
+    });
+    actions.appendChild(archive);
   }
   if (active) {
     sub.appendChild(make('span', { id: 'creator-time-left', class: 'creator-time-left' }));
@@ -625,8 +666,12 @@ function _renderHead() {
     sub.appendChild(stop);
   }
   head.replaceChildren(
-    make('div', { class: 'creator-job-title', text: firstLine || '(no task)', title: status.task || '' }),
+    make('div', { class: 'creator-job-title-row' }, [
+      make('div', { class: 'creator-job-title', text: firstLine || '(no task)', title: status.task || '' }),
+      actions.children.length ? actions : null,
+    ]),
     sub,
+    msg,
   );
   _updateTimeLeft();
 }
@@ -935,6 +980,14 @@ function _onLiveEvent(event) {
   if (next !== _view.status.status) {
     _view.status.status = next;
     _setJobStatus(_view.status.job_id, next);
+    _renderHead();
+  }
+  if (event.type === 'named' && event.name) {
+    // The job got its name (9g).
+    _view.status.name = event.name;
+    const entry = _jobs.find(j => j.job_id === _view.status.job_id);
+    if (entry) entry.name = event.name;
+    _renderHistory();
     _renderHead();
   }
   if (event.type === 'paused') {

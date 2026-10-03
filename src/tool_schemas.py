@@ -1115,6 +1115,7 @@ FUNCTION_TOOL_SCHEMAS = [
                     "action": {"type": "string", "enum": ["list", "read"], "description": "list (newest first) or read"},
                     "id": {"type": "string", "description": "For read: the job id, e.g. cr-0123456789ab"},
                     "limit": {"type": "integer", "description": "For list: how many (default 10, max 50)"},
+                    "archived": {"type": "boolean", "description": "For list: include archived jobs"},
                 },
                 "required": ["action"]
             }

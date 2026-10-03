@@ -849,6 +849,10 @@ class CreatorJob(Base):
     # JSON: pause request, progress notes, failure tracker, command log,
     # structured report sections (src/creator_mode.py)
     state       = Column(Text, nullable=True)
+    # Phase 9g: a short name for the job (from its task), and whether you've
+    # archived it (hidden from the history unless you show archived jobs).
+    name        = Column(String, nullable=True)
+    archived    = Column(Boolean, default=False)
 
     __table_args__ = (
         Index('ix_creator_jobs_owner_started', 'owner', 'started_at'),
@@ -1175,6 +1179,31 @@ def _migrate_add_creator_job_state_column():
             logging.getLogger(__name__).info("Migrated: added 'state' column to creator_jobs")
     except Exception as e:
         logging.getLogger(__name__).warning(f"creator_jobs state migration failed: {e}")
+    finally:
+        try:
+            conn.close()
+        except Exception:
+            pass
+
+
+def _migrate_add_creator_job_name_archived_columns():
+    """Add `name` and `archived` to creator_jobs (Creator Phase 9g)."""
+    import sqlite3
+    db_path = DATABASE_URL.replace("sqlite:///", "")
+    if not os.path.exists(db_path):
+        return
+    conn = None
+    try:
+        conn = sqlite3.connect(db_path)
+        cursor = conn.execute("PRAGMA table_info(creator_jobs)")
+        columns = [row[1] for row in cursor.fetchall()]
+        if columns and "name" not in columns:
+            conn.execute("ALTER TABLE creator_jobs ADD COLUMN name VARCHAR")
+        if columns and "archived" not in columns:
+            conn.execute("ALTER TABLE creator_jobs ADD COLUMN archived BOOLEAN DEFAULT 0")
+        conn.commit()
+    except Exception as e:
+        logging.getLogger(__name__).warning(f"creator_jobs name/archived migration failed: {e}")
     finally:
         try:
             conn.close()
@@ -2181,6 +2210,7 @@ def init_db():
     _migrate_add_supports_tools_column()
     _migrate_add_task_run_model_column()
     _migrate_add_creator_job_state_column()
+    _migrate_add_creator_job_name_archived_columns()
     _migrate_add_owner_column()
     _migrate_add_document_archived_column()
     _migrate_add_last_message_at_column()

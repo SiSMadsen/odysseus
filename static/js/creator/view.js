@@ -32,6 +32,13 @@ export function displayCommand(tool, command) {
   return text;
 }
 
+/** A job's title: its name (9g), else its task's first line. */
+export function jobTitle(job) {
+  if (!job) return '';
+  const name = String(job.name || '').trim();
+  return name || String(job.task || '').split('\n')[0];
+}
+
 export function statusLabel(status) {
   return STATUS_LABELS[status] || String(status || 'Unknown');
 }

@@ -531,3 +531,142 @@ def test_lessons_use_chats_retrieval_when_it_has_one(prefs, store):
 
     assert CreatorMemory(memory_manager=store, chat_processor=Proc()).lessons_for("task", "alice") == ["Creator lesson: a."]
     assert asked == [("task", 6, ["Creator lesson: a."])]
+
+
+# ---------------------------------------------------------------------------
+# 9g: pinned operating notes, job names, archive
+# ---------------------------------------------------------------------------
+
+def test_operating_notes_start_update_and_keep_your_edits(monkeypatch, prefs, tmp_path):
+    skills = _skills(tmp_path)
+    mem = CreatorMemory(skills_manager=skills)
+    assert mem.pinned_messages("alice") == []
+    calls = _llm(monkeypatch, json.dumps({"changed": True, "notes": [
+        "creator may reload Apache with systemctl; no root needed.",
+        "- Stage root files in /srv/creator-helper/work.", "x"]}))
+    out = asyncio.run(mem.after_job("cr-1", "alice", STATUS_REPORT, "http://x", "m", {}, tool_calls=1))
+    assert out["notes"] == "started (2 points)"
+    sk = mem.notes_skill("alice")
+    assert sk["category"] == "creator-notes" and sk["status"] == "published"
+    assert sk["procedure"] == ["creator may reload Apache with systemctl; no root needed.",
+                               "Stage root files in /srv/creator-helper/work."]
+    # You edit the notes in Brain > Skills; the next update starts from your text.
+    skills.update_skill(sk["name"], {"procedure": sk["procedure"] + ["The user wants backups kept for a week."]},
+                        owner="alice")
+    _llm(monkeypatch, json.dumps({"changed": False}))
+    assert asyncio.run(mem.update_notes("cr-2", "alice", STATUS_REPORT, "u", "m", {})) == "unchanged"
+    calls = _llm(monkeypatch, json.dumps({"changed": True, "notes": [
+        "creator may reload Apache with systemctl; no root needed.",
+        "Stage root files in /srv/creator-helper/work.", "The user wants backups kept for a week.",
+        "index.html uses CRLF line endings."]}))
+    assert asyncio.run(mem.update_notes("cr-3", "alice", STATUS_REPORT, "u", "m", {})) == "updated (3 → 4 points)"
+    assert "- The user wants backups kept for a week." in calls[0]["messages"][1]["content"]   # your edit was sent
+    block = mem.pinned_messages("alice")[0]
+    assert block["metadata"]["source"] == "saved skill: creator operating notes"
+    assert "- index.html uses CRLF line endings." in block["content"]
+    assert len([s for s in skills.load(owner="alice") if s.get("category") == "creator-notes"]) == 1
+    prefs.update(skills_enabled=False)
+    assert mem.pinned_messages("alice") == []
+    assert mem.pinned_messages("bob") == []
+
+
+def test_operating_notes_follow_auto_skills_and_need_a_job_that_did_something(monkeypatch, prefs, tmp_path):
+    calls = _llm(monkeypatch, json.dumps({"changed": True, "notes": ["a note that is long enough"]}))
+    mem = CreatorMemory(skills_manager=_skills(tmp_path))
+    out = asyncio.run(mem.after_job("cr-1", "alice", {**STATUS_REPORT, "commands": []}, "u", "m", {}))
+    assert "notes" not in out
+    prefs.update(auto_skills=False)
+    out = asyncio.run(mem.after_job("cr-2", "alice", STATUS_REPORT, "u", "m", {}, tool_calls=5))
+    assert "notes" not in out and calls == []
+
+
+@pytest.mark.parametrize("reply, name", [
+    ("Server status page", "Server status page"),
+    ('"Install goaccess."', "Install goaccess"),
+    ("Name: Fix Apache config\nBecause the task…", "Fix Apache config"),
+    ("x" * 80, None),
+    ("", None),
+])
+def test_job_names_are_short_and_tidy(monkeypatch, reply, name):
+    _llm(monkeypatch, reply)
+    assert asyncio.run(CreatorMemory().name_job("Build a status page", "alice", "u", "m", {})) == name
+
+
+class NamingMemory(FakeMemory):
+    def pinned_messages(self, owner):
+        return [untrusted_context_message("saved skill: creator operating notes", "- notes")]
+
+    async def name_job(self, task, owner, url, model, headers):
+        return "Status page"
+
+
+def test_a_job_gets_the_notes_a_name_and_can_be_archived(session_factory):
+    calls = []
+
+    async def run():
+        mgr = CreatorManager(session_factory=session_factory, agent_loop=scripted([[("text", REPORT)]], calls),
+                             memory=NamingMemory())
+        job_id = mgr.start_job("Build a server status page", "u", "m", owner="alice")
+        await _wait_finished(mgr, job_id)
+        for _ in range(50):
+            if (mgr.get_job(job_id) or {}).get("name"):
+                break
+            await asyncio.sleep(0.02)
+        return mgr, job_id
+
+    mgr, job_id = asyncio.run(run())
+    sources = [(m.get("metadata") or {}).get("source") for m in calls[0]["messages"]]
+    assert "saved skill: creator operating notes" in sources
+    job = mgr.get_job(job_id)
+    assert job["name"] == "Status page" and job["archived"] is False
+    assert any(n["text"].startswith("Given ") and "operating notes" in n["text"] for n in job["state"]["notes"])
+    assert mgr.list_jobs("alice")[0]["name"] == "Status page"
+    mgr.set_archived(job_id, True)
+    assert mgr.list_jobs("alice") == [] and mgr.archived_count("alice") == 1
+    assert mgr.list_jobs("alice", include_archived=True)[0]["archived"] is True
+    listed = do_creator_jobs({"action": "list"}, owner="alice")
+    assert listed["output"] == "You have no Creator jobs yet."
+    listed = do_creator_jobs({"action": "list", "archived": True}, owner="alice")
+    assert "Status page: Build a server status page (archived)" in listed["output"]
+    mgr.set_archived(job_id, False)
+    assert mgr.archived_count("alice") == 0 and len(mgr.list_jobs("alice")) == 1
+
+
+def test_the_archive_route_refuses_a_running_job(monkeypatch):
+    from fastapi import HTTPException
+    from routes import creator_routes
+    done_calls = []
+
+    class Mgr:
+        def get_job(self, job_id):
+            return {"id": job_id, "owner": "alice", "status": "running" if job_id.endswith("1") else "done"}
+
+        def set_archived(self, job_id, archived):
+            done_calls.append((job_id, archived))
+
+    monkeypatch.setattr(creator_routes, "require_user", lambda r: r.state.current_user)
+    router = creator_routes.setup_creator_routes(Mgr())
+    route = next(r.endpoint for r in router.routes if getattr(r, "path", "") == "/api/creator/archive/{job_id}")
+    req = SimpleNamespace(state=SimpleNamespace(current_user="alice"), headers={},
+                          app=SimpleNamespace(state=SimpleNamespace(auth_manager=None)))
+    with pytest.raises(HTTPException) as exc:
+        asyncio.run(route(job_id="cr-000000000001", body=SimpleNamespace(archived=True), request=req))
+    assert exc.value.status_code == 400
+    assert asyncio.run(route(job_id="cr-000000000002", body=SimpleNamespace(archived=True), request=req)) \
+        == {"job_id": "cr-000000000002", "archived": True}
+    assert done_calls == [("cr-000000000002", True)]
+
+
+def test_the_migration_adds_name_and_archived(tmp_path, monkeypatch):
+    import sqlite3
+    from core import database
+    db = tmp_path / "old.db"
+    conn = sqlite3.connect(db)
+    conn.execute("CREATE TABLE creator_jobs (id VARCHAR PRIMARY KEY, owner VARCHAR, task TEXT, state TEXT)")
+    conn.commit()
+    conn.close()
+    monkeypatch.setattr(database, "DATABASE_URL", f"sqlite:///{db}")
+    database._migrate_add_creator_job_name_archived_columns()
+    database._migrate_add_creator_job_name_archived_columns()   # idempotent
+    cols = [r[1] for r in sqlite3.connect(db).execute("PRAGMA table_info(creator_jobs)")]
+    assert "name" in cols and "archived" in cols

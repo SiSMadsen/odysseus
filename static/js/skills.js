@@ -206,6 +206,9 @@ function _statusPill(sk) {
 // hand-authored vs auto-generated so they can audit (and demote /
 // edit / publish) before trusting them.
 function _sourcePill(sk) {
+  if (sk.category === 'creator-notes') {
+    return '<span class="memory-cat-badge" title="Given to every Creator job, and kept up to date by Creator. Your edits are kept.">pinned for Creator</span>';
+  }
   if (sk.source === 'creator') {
     return '<span class="memory-cat-badge" title="Learned from a finished Creator job">from Creator</span>';
   }

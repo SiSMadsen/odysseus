@@ -90,6 +90,34 @@ def knowledge_prompt(facts: bool) -> str:
 # Kept for callers that only want facts.
 FACTS_SYSTEM_PROMPT = knowledge_prompt(True)
 
+# Phase 9g: Creator's pinned operating notes, one skill per owner, given to
+# every job; and job names.
+NOTES_CATEGORY = "creator-notes"
+NOTES_TITLE = "Creator: operating notes for this server"
+MAX_NOTES = 25
+MAX_NOTE_CHARS = 220
+NOTES_SYSTEM_PROMPT = (
+    "You keep Creator's OPERATING NOTES for one server: short, general points "
+    "about how to work on this machine that help every future admin job, "
+    "whatever its task. Good: where things are and how they're laid out, what "
+    "the unprivileged user `creator` may and may not do, how root commands "
+    "work best here (staging in /srv/creator-helper/work, what the watchdog "
+    "allows), conventions the user wants, recurring pitfalls of this machine. "
+    "Not: details of one task (those are lessons and skills), anything "
+    "temporary, passwords/tokens/keys.\n\n"
+    "You get the current notes and the report of the job that just ended. "
+    "If the job taught nothing new and general, return {\"changed\": false}. "
+    "Otherwise return {\"changed\": true, \"notes\": [...]}: the whole new "
+    f"list, at most {MAX_NOTES} points, each one short sentence; keep the "
+    "existing points (the user may have edited them) unless the job showed "
+    "one is wrong or two say the same thing. Only JSON, no fences."
+)
+NAME_SYSTEM_PROMPT = (
+    "Name this admin task in 2 to 6 words, like a short title (e.g. \"Server "
+    "status page\", \"Install goaccess\", \"Fix Apache config\"). Reply with the "
+    "name only: no quotes, no full stop."
+)
+
 SKILL_MIN_CONFIDENCE = 0.6
 SKILL_CATEGORY = "creator"
 SKILL_SYSTEM_PROMPT = (
@@ -216,6 +244,100 @@ class CreatorMemory:
                 + "\n".join(f"- {t}" for t in lessons)))
         return msgs
 
+    # -- pinned operating notes (9g) -------------------------------------------
+
+    def notes_skill(self, owner: Optional[str]) -> Optional[dict]:
+        """The owner's operating-notes skill, or None."""
+        if self.skills_manager is None:
+            return None
+        try:
+            return next((sk for sk in self.skills_manager.load(owner=owner or None)
+                         if sk.get("category") == NOTES_CATEGORY), None)
+        except Exception:
+            return None
+
+    def pinned_messages(self, owner: Optional[str]) -> List[dict]:
+        """The operating notes, for every job (unless skills are off)."""
+        if not _prefs(owner).get("skills_enabled", True):
+            return []
+        sk = self.notes_skill(owner)
+        notes = [n for n in (sk or {}).get("procedure") or [] if str(n).strip()]
+        if not notes:
+            return []
+        from src.prompt_security import untrusted_context_message
+        return [untrusted_context_message(
+            "saved skill: creator operating notes",
+            "Creator's operating notes for this server (pinned: kept up to date by Creator from its "
+            "jobs, and editable by the user in Brain > Skills):\n" + "\n".join(f"- {n}" for n in notes))]
+
+    async def update_notes(self, job_id, owner, report, endpoint_url, model, headers) -> str:
+        """After a job: the operating notes, updated if the job taught
+        something general. Returns what happened."""
+        from services.memory.skill_extractor import _extract_json_object
+        from src.llm_core import llm_call_async
+        url, mdl, hdrs = self._task_endpoint(endpoint_url, model, headers, owner)
+        if not url or not mdl:
+            return "no model to ask"
+        sk = self.notes_skill(owner)
+        current = [str(n) for n in (sk or {}).get("procedure") or []]
+        raw = await llm_call_async(url, mdl, [
+            {"role": "system", "content": NOTES_SYSTEM_PROMPT},
+            {"role": "user", "content": "Current notes:\n" + ("\n".join(f"- {n}" for n in current) or "(none yet)")
+             + "\n\nJob report:\n\n" + report_text(report) + "\n\nReturn the JSON object now."},
+        ], temperature=0.1, max_tokens=2048, headers=hdrs)
+        try:
+            from src.text_helpers import strip_think
+            raw = strip_think(raw or "", prose=True, prompt_echo=True)
+        except Exception:
+            pass
+        data = _extract_json_object(raw or "")
+        if not isinstance(data, dict):
+            return "the model's answer had no JSON object"
+        if not data.get("changed"):
+            return "unchanged"
+        notes = []
+        for n in data.get("notes") or []:
+            n = re.sub(r"\s+", " ", str(n)).strip().lstrip("-• ").strip()
+            if 5 <= len(n) <= MAX_NOTE_CHARS and n not in notes:
+                notes.append(n)
+        notes = notes[:MAX_NOTES]
+        if not notes:
+            return "the model returned no usable notes"
+        if notes == current:
+            return "unchanged"
+        if sk is None:
+            self.skills_manager.add_skill(
+                name=NOTES_TITLE, description="Pinned: general notes on operating this server, kept up to date "
+                "by Creator after its jobs. Edit freely: Creator keeps your changes.",
+                when_to_use="Every Creator job on this server.", procedure=notes, tags=["creator", "server"],
+                source="user", confidence=1.0, session_id=job_id, owner=owner or None,
+                category=NOTES_CATEGORY, status="published")
+            return f"started ({len(notes)} points)"
+        self.skills_manager.update_skill(sk["name"], {"procedure": notes}, owner=owner or None)
+        return f"updated ({len(current)} → {len(notes)} points)"
+
+    async def name_job(self, task: str, owner, endpoint_url, model, headers) -> Optional[str]:
+        """A short name for a job, from its task (2-6 words), or None."""
+        from src.llm_core import llm_call_async
+        url, mdl, hdrs = self._task_endpoint(endpoint_url, model, headers, owner)
+        if not url or not mdl:
+            return None
+        raw = await llm_call_async(url, mdl, [
+            {"role": "system", "content": NAME_SYSTEM_PROMPT},
+            {"role": "user", "content": (task or "")[:2000]},
+        ], temperature=0.2, max_tokens=256, headers=hdrs)
+        try:
+            from src.text_helpers import strip_think
+            raw = strip_think(raw or "", prose=True, prompt_echo=True)
+        except Exception:
+            pass
+        lines = [ln.strip() for ln in (raw or "").splitlines() if ln.strip()]
+        name = re.sub(r"^(name|title)\s*:\s*", "", lines[0], flags=re.I) if lines else ""
+        name = name.strip().strip("\"'`*#").rstrip(".").strip()
+        if not name or len(name) > 60:
+            return None
+        return name
+
     def lessons_for(self, task: str, owner: Optional[str], already: str = "") -> List[str]:
         """The owner's Creator lessons that match the task, best first,
         leaving out any the memory block already has."""
@@ -270,6 +392,14 @@ class CreatorMemory:
                     out["facts"], out["lessons"] = facts, lessons
                 except Exception:
                     logger.warning("Creator: fact/lesson extraction failed", exc_info=True)
+        # The pinned operating notes (9g): any job that did something can
+        # teach something general about the server.
+        if self.skills_manager is not None and report.get("commands") and prefs.get("auto_skills", True):
+            try:
+                out["notes"] = await self.update_notes(job_id, owner, report, endpoint_url, model, headers)
+            except Exception as e:
+                logger.warning("Creator: updating the operating notes failed", exc_info=True)
+                out["notes"] = f"failed: {str(e)[:200]}"
         # Why a job leaves no skill is always recorded (the audit log's
         # `remembered` line), so "none" can be told apart from a bug.
         if self.skills_manager is None:
@@ -477,12 +607,15 @@ def do_creator_jobs(content, owner: Optional[str] = None) -> dict:
             limit = max(1, min(int(args.get("limit") or _LIST_DEFAULT), _LIST_MAX))
         except (TypeError, ValueError):
             limit = _LIST_DEFAULT
-        jobs = manager.list_jobs(owner or "", limit=limit)
+        jobs = manager.list_jobs(owner or "", limit=limit, include_archived=bool(args.get("archived")))
         if not jobs:
             return {"output": "You have no Creator jobs yet.", "exit_code": 0, "jobs": []}
         lines = [f"- {j['job_id']} · {(j.get('started_at') or '')[:16].replace('T', ' ')} · {j['status']} · "
-                 + (j.get("task") or "").split("\n")[0][:150] for j in jobs]
-        return {"output": "Your Creator jobs, newest first (read one with action=read and its id):\n"
+                 + (f"{j['name']}: " if j.get("name") else "")
+                 + (j.get("task") or "").split("\n")[0][:150]
+                 + (" (archived)" if j.get("archived") else "") for j in jobs]
+        return {"output": "Your Creator jobs, newest first (read one with action=read and its id; "
+                          "archived jobs are left out unless you pass \"archived\": true):\n"
                           + "\n".join(lines), "exit_code": 0, "jobs": jobs}
     if action == "read":
         job_id = str(args.get("id") or args.get("job_id") or "").strip()

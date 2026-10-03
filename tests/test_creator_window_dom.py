@@ -543,11 +543,11 @@ def test_learn_a_skill_says_what_happened():
         const head = env.buttons('#creator-job-head');
         env.clickButton('Learn a skill', '#creator-job-head');
         await env.settle();
-        const saved = env.text('#creator-learn-msg');
+        const saved = env.text('#creator-job-msg');
         reply = { skill: null, note: 'declined: a one-off check, nothing to reuse' };
         env.clickButton('Learn a skill', '#creator-job-head');
         await env.settle();
-        done({ head, saved, declined: env.text('#creator-learn-msg') });
+        done({ head, saved, declined: env.text('#creator-job-msg') });
     """)
     assert "Learn a skill" in out["head"] and "Follow up" in out["head"]
     assert out["saved"] == 'Skill "install-a-root-script" saved as draft.'
@@ -569,3 +569,66 @@ def test_no_learn_button_on_a_job_that_did_not_finish():
         done({ head: env.buttons('#creator-job-head') });
     """)
     assert "Learn a skill" not in out["head"] and "Follow up" in out["head"]
+
+
+def test_names_show_in_the_history_and_header_and_arrive_live():
+    out = _run(_with_running_job(job_over="{ task: 'Build a server status section for my website at /var/www/html/status/.' }") + """
+        const before = [env.text('.creator-job-task'), env.text('.creator-job-title')];
+        stream().emit({ seq: 1, type: 'named', name: 'Server status page' });
+        await env.settle();
+        done({ before, after: [env.text('.creator-job-task'), env.text('.creator-job-title')],
+               tooltip: env.$('.creator-job-title').title, timeline: env.$$('.creator-note').length });
+    """)
+    assert out["before"] == ["Build a server status section for my website at /var/www/html/status/."] * 2
+    assert out["after"] == ["Server status page", "Server status page"]
+    assert out["tooltip"].startswith("Build a server status section")   # the task, on hover
+    assert out["timeline"] == 0                                          # not a timeline item
+
+
+def test_finished_job_actions_sit_together_and_archive_hides_it():
+    out = _run("""
+        const finished = job({ status: 'done', has_report: true, finished_at: '2026-10-03T10:00:00Z', name: 'Status page' });
+        let archived = false;
+        const env = h.setup({ routes: {
+          'GET /api/model-endpoints': [],
+          'GET /api/creator/jobs?limit=100': () => ({ jobs: archived ? [] : [listed({ ...finished })],
+                                                      archived_count: archived ? 1 : 0 }),
+          'GET /api/creator/jobs?limit=100&archived=true': () => ({
+            jobs: [{ ...listed(finished), name: 'Status page', archived }], archived_count: archived ? 1 : 0 }),
+          [`GET /api/creator/status/${JOB}?since=0`]: () => ({ ...finished, archived }),
+          [`GET /api/creator/report/${JOB}`]: { report: '# Report' },
+          [`POST /api/creator/archive/${JOB}`]: (body) => { archived = body.archived; return { job_id: JOB, archived }; },
+        } });
+        const panel = await env.loadPanel();
+        panel.openPanel();
+        await env.settle();
+        await panel.selectJob(JOB);
+        await env.settle();
+        const actions = env.buttons('.creator-job-actions');
+        const toggleBefore = h.visible(env.byId('creator-archived-toggle'));
+        env.clickButton('Archive', '.creator-job-actions');
+        await env.settle(10);
+        const afterArchive = { list: env.$$('.creator-job-item').length, msg: env.text('#creator-job-msg'),
+                               actions: env.buttons('.creator-job-actions'), toggle: env.text('#creator-archived-toggle') };
+        env.clickButton('Show archived jobs (1)', '.creator-history');
+        await env.settle(10);
+        const shown = { list: env.$$('.creator-job-item.archived').length, meta: env.text('.creator-job-meta'),
+                        toggle: env.text('#creator-archived-toggle') };
+        env.clickButton('Unarchive', '.creator-job-actions');
+        await env.settle(10);
+        done({ actions, toggleBefore, afterArchive, shown, archiveCall: env.lastCall('POST', '/api/creator/archive/').body,
+               finalMsg: env.text('#creator-job-msg') });
+    """)
+    assert out["actions"] == ["Follow up", "Learn a skill", "Archive"]
+    assert out["toggleBefore"] is False                       # nothing archived: no toggle
+    a = out["afterArchive"]
+    assert a["list"] == 0 and a["msg"] == "Archived: hidden from the history."
+    assert a["actions"] == ["Follow up", "Learn a skill", "Unarchive"] and a["toggle"] == "Show archived jobs (1)"
+    assert out["shown"]["list"] == 1 and out["shown"]["meta"].endswith("· archived")
+    assert out["shown"]["toggle"] == "Hide archived jobs"
+    assert out["archiveCall"] == {"archived": False} and out["finalMsg"] == "Back in the history."
+
+
+def test_a_running_job_has_no_archive_button():
+    out = _run(_with_running_job() + "done({ actions: env.buttons('.creator-job-actions'), stop: env.buttons('#creator-job-head') });")
+    assert out["actions"] == [] and "Stop" in out["stop"]
