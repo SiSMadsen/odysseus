@@ -1,12 +1,12 @@
 #!/usr/bin/env python3
-"""Creator root helper (Phases 5b and 5c of docs/creator-plan.md).
+"""Creator root helper (Phases 5b, 5c and 5d of docs/creator-plan.md).
 
 Runs on the HOST, outside Docker, as root (see creator-root-helper.service and
 README.md in this folder). It holds the root switch: whether root is on, and
 for how long (5b). It also holds the watchdog (5c), which judges a command
-before it may run as root: automatic, needs your approval, or refused. It
-still runs no commands; running them comes in 5d, and will be refused unless
-the switch is on.
+before it may run as root: automatic, needs your approval, or refused. And it
+runs root commands (5d), each in its own short-lived systemd unit, only while
+the switch is on and only as the watchdog allows.
 
 Two sockets, one request per connection (one line of JSON in, one out):
 
@@ -20,12 +20,19 @@ Two sockets, one request per connection (one line of JSON in, one out):
     {"type": "check", "command": "apt-get install curl"}
     {"type": "watchdog"}
     {"type": "watchdog_save", "settings": {...}, "code": "123456"}
+    {"type": "run", "command": "apt-get install curl", "approved": false, "redact": [...]}
+    {"type": "denied", "command": "..."}
   `enable` needs a code from your authenticator app (TOTP, RFC 6238). The key
   is in a root-only file on the host; Odysseus never sees it. A code works
   once. After 5 wrong codes in a row, `enable` is locked for 15 minutes.
   `revoke` needs no code. `check` only judges a command (it never runs one
   and never switches root off). `watchdog_save` needs a code only when the
   change loosens the watchdog; the helper decides that, not Odysseus.
+  `run` judges the command itself, then: refused → not run, and root switches
+  off; root off → not run; approval tier → runs only with `approved` (you
+  approved it in Odysseus); automatic → runs as exactly the words judged, with
+  no shell. `denied` records a root command you denied; 3 in a row switch
+  root off.
 
 - The control socket (/run/creator-root/control.sock), root only, never
   mounted into the container: the terminal fallback,
@@ -63,9 +70,9 @@ import time
 from datetime import datetime, timezone
 from urllib.parse import quote
 
-VERSION = 2
+VERSION = 3
 # Request types each socket answers.
-CAPABILITIES = ("hello", "status", "enable", "revoke", "check", "watchdog", "watchdog_save")
+CAPABILITIES = ("hello", "status", "enable", "revoke", "check", "watchdog", "watchdog_save", "run", "denied")
 CONTROL_CAPABILITIES = ("status", "enable", "revoke", "check", "watchdog", "watchdog_save")
 
 DEFAULT_SOCKET = "/srv/creator-root/root.sock"
@@ -384,11 +391,11 @@ class RootSwitch:
         self._switch_on(minutes, "control")
         return {"ok": True, **self.status()}
 
-    def revoke(self, via: str) -> dict:
+    def revoke(self, via: str, why: str = "revoked") -> dict:
         was_on = self.is_on()
         self._until = self._expires_wall = self._minutes = self._since_wall = None
         if was_on:
-            self.audit.write({"type": "root_off", "why": "revoked", "via": via})
+            self.audit.write({"type": "root_off", "why": why, "via": via})
         return {"ok": True, "was_on": was_on, **self.status()}
 
 
@@ -459,6 +466,7 @@ _NAME_RE = re.compile(r"^([a-z_][a-z0-9_-]{0,31}|[0-9]{1,10})$")
 _APT_OPTIONS = {"update": {"-y", "-q"}, "upgrade": {"-y", "-q"},
                 "install": {"-y", "-q", "--no-install-recommends"}}
 _RECURSIVE = {"-R", "--recursive"}
+_APT_KEEP_CONFIG = ("-o", "Dpkg::Options::=--force-confdef", "-o", "Dpkg::Options::=--force-confold")
 
 
 def default_watchdog() -> dict:
@@ -567,8 +575,10 @@ class Watchdog:
     request, so a hand edit as root counts at once; if it can't be trusted,
     nothing is automatic until it's fixed (fail closed)."""
 
-    def __init__(self, path: str, odysseus_dir: str = "", owner_uid=None):
+    def __init__(self, path: str, odysseus_dir: str = "", owner_uid=None,
+                 hardlinks_file: str = "/proc/sys/fs/protected_hardlinks"):
         self.path = path
+        self.hardlinks_file = hardlinks_file
         self.odysseus_dir = os.path.normpath(odysseus_dir) if odysseus_dir else ""
         self.owner_uid = os.geteuid() if owner_uid is None else owner_uid
 
@@ -653,18 +663,21 @@ class Watchdog:
             return {**verdict, "tier": "refused", "refused_by": hit, "switch_off": True,
                     "reason": f"It names {hit}, which root commands may never touch."}
         try:
-            form, argv = self._automatic(command, settings)
+            form, argv, run_argv = self._automatic(command, settings)
         except _Refused as e:
             return {**verdict, "tier": "refused", "refused_by": str(e), "switch_off": True,
                     "reason": f"A target resolves to {e}, which root commands may never touch."}
         except _AsksApproval as e:
             return {**verdict, "tier": "approval", "reason": str(e)}
-        return {**verdict, "tier": "automatic", "form": form, "argv": argv,
+        return {**verdict, "tier": "automatic", "form": form, "argv": argv, "run_argv": run_argv,
                 "reason": f"It is {AUTOMATIC_FORMS[form]}, an automatic form."}
 
     def _automatic(self, command: str, settings: dict):
-        """(form, argv) for an automatic command; raises _AsksApproval (why
-        not) or _Refused (a target resolves into a refused path)."""
+        """(form, argv, run_argv) for an automatic command: argv is the command
+        as written, run_argv what 5d runs (no shell; apt-get keeps your config
+        files on upgrade, chmod/chown get the resolved paths). Raises
+        _AsksApproval (why not) or _Refused (a target resolves into a refused
+        path)."""
         if not _PLAIN_RE.match(command):
             bad = sorted({c for c in command if not _PLAIN_RE.match(c)})
             shown = " ".join("space" if c == " " else repr(c) for c in bad[:5])
@@ -673,9 +686,13 @@ class Watchdog:
         argv = command.split()
         name = argv[0]
         if name == "apt-get":
-            return self._apt(argv, settings), argv
+            form = self._apt(argv, settings)
+            if form == "apt_update":
+                return form, argv, list(argv)
+            # No interactive question about a changed config file: keep yours.
+            return form, argv, ["apt-get", *_APT_KEEP_CONFIG, *argv[1:]]
         if name in ("chmod", "chown"):
-            return self._chmod_chown(argv, settings), argv
+            return "chmod_chown", argv, self._chmod_chown(argv, settings)
         raise _AsksApproval(f"{name} isn't one of the automatic forms (apt-get update/upgrade/install, chmod, chown).")
 
     @staticmethod
@@ -710,12 +727,17 @@ class Watchdog:
                                     "versions or releases automatically).")
         return form
 
-    def _chmod_chown(self, argv, settings) -> str:
+    def _chmod_chown(self, argv, settings) -> list:
+        """The words to run, with each target replaced by its resolved path.
+        chmod/chown -R never follow symlinks they meet inside the tree (GNU
+        default), and the resolved targets aren't links."""
         tool = argv[0]
         if not settings["automatic"]["chmod_chown"]:
             raise _AsksApproval(f"Automatic {AUTOMATIC_FORMS['chmod_chown']} is switched off in the watchdog settings.")
         args = argv[1:]
+        flags = []
         while args and args[0] in _RECURSIVE:
+            flags.append(args[0])
             args = args[1:]
         if len(args) < 2 or any(a.startswith("-") for a in args):
             raise _AsksApproval(f"Automatic {tool} is `{tool} [-R] <{'mode' if tool == 'chmod' else 'owner[:group]'}> "
@@ -729,9 +751,19 @@ class Watchdog:
         folders = settings["allowed_folders"]
         if not folders:
             raise _AsksApproval(f"No folders are allowed for automatic {tool}.")
-        for target in targets:
-            self._check_target(target, folders, settings)
-        return "chmod_chown"
+        if not self._hardlinks_protected():
+            # A hard link inside the folder could then be a root file.
+            raise _AsksApproval("fs.protected_hardlinks isn't on, so a hard link in the folder could point at "
+                                "any file; automatic chmod/chown needs it on.")
+        real = [self._check_target(target, folders, settings) for target in targets]
+        return [tool, *flags, spec, *real]
+
+    def _hardlinks_protected(self) -> bool:
+        try:
+            with open(self.hardlinks_file, encoding="ascii") as f:
+                return f.read().strip() == "1"
+        except OSError:
+            return False
 
     @staticmethod
     def _check_owner(spec: str) -> None:
@@ -749,7 +781,7 @@ class Watchdog:
                 except KeyError:
                     raise _AsksApproval(f"There's no {what} called {value} on this machine.")
 
-    def _check_target(self, target: str, folders, settings) -> None:
+    def _check_target(self, target: str, folders, settings) -> str:
         if not target.startswith("/"):
             raise _AsksApproval(f"{target} isn't a full path (automatic targets start with /).")
         plain = os.path.normpath(target)
@@ -769,6 +801,178 @@ class Watchdog:
                 if path in roots:
                     raise _AsksApproval(f"{shown} is an allowed folder itself; only what's inside it is automatic.")
                 raise _AsksApproval(f"{shown} isn't inside an allowed folder ({', '.join(folders)}).")
+        return real
+
+
+# ---------------------------------------------------------------------------
+# Running root commands (5d)
+# ---------------------------------------------------------------------------
+#
+# Each command runs in its own short-lived systemd unit (systemd-run), not as
+# a child of this helper: the helper stays locked down (it only asks systemd,
+# as root, over systemd's own socket), and the command's unit gets walls the
+# helper couldn't give a child of its own. Decision 5d-1 (2026-10-03).
+
+DEFAULT_SYSTEMD_RUN = "/usr/bin/systemd-run"
+DEFAULT_SYSTEMCTL = "/usr/bin/systemctl"
+HELPER_UNIT = "creator-root-helper.service"
+# Denied root commands in a row that switch root off (decision 4 of 5c).
+MAX_DENIALS = 3
+OUTPUT_CAP_BYTES = 256 * 1024
+AUDIT_PREVIEW_CHARS = 2000
+MAX_REDACT_VALUES = 200
+STOP_GRACE_S = 5.0
+RUN_PATH = "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
+RUN_ENV = {"PATH": RUN_PATH, "HOME": "/root", "LANG": "C.UTF-8", "TERM": "dumb",
+           "DEBIAN_FRONTEND": "noninteractive"}
+
+# Unreachable from a root command: the helpers' state, keys, logs and sockets,
+# and Docker's socket (Docker is all of root, without the watchdog). The
+# Odysseus folder is added from --odysseus-dir. "-": fine if it doesn't exist.
+WALL_INACCESSIBLE = (
+    "/etc/creator-root", "/var/lib/creator-root", "/var/log/creator-root", "/run/creator-root",
+    "/srv/creator-root", "/srv/creator-helper", "/var/log/creator-helper",
+    "/run/docker.sock", "/var/run/docker.sock",
+)
+# Readable, not changeable: the helper programs, their units and the polkit rule.
+WALL_READ_ONLY = (
+    "/opt/creator-root", "/opt/creator-helper",
+    "/etc/systemd/system/creator-root-helper.service", "/etc/systemd/system/creator-helper.service",
+    "/etc/polkit-1/rules.d/50-creator-apache.rules",
+)
+# Taken away, because each would undo the walls: mounts and namespaces
+# (SYS_ADMIN), kernel modules (SYS_MODULE), reaching into other processes,
+# this helper included (SYS_PTRACE).
+WALL_DROPPED_CAPS = ("CAP_SYS_ADMIN", "CAP_SYS_MODULE", "CAP_SYS_PTRACE")
+
+
+def blank(text, values):
+    """`text` with each value in `values` replaced by [REDACTED], longest first."""
+    if not isinstance(text, str) or not values:
+        return text
+    for v in sorted(values, key=len, reverse=True):
+        text = text.replace(v, "[REDACTED]")
+    return text
+
+
+class _Capped:
+    """Reads a stream to the end, keeping only the first `cap` bytes."""
+
+    def __init__(self, cap: int):
+        self.cap = cap
+        self.kept = bytearray()
+        self.total = 0
+
+    async def drain(self, stream) -> None:
+        while True:
+            chunk = await stream.read(65536)
+            if not chunk:
+                return
+            self.total += len(chunk)
+            room = self.cap - len(self.kept)
+            if room > 0:
+                self.kept += chunk[:room]
+
+    def text(self) -> str:
+        return self.kept.decode("utf-8", errors="replace")
+
+
+class RootRunner:
+    """Runs one command (a list of words) in a transient systemd unit and
+    waits for it. Stops the unit at the time limit or when the client goes
+    away (Creator's Stop)."""
+
+    def __init__(self, odysseus_dir: str = "", systemd_run: str = DEFAULT_SYSTEMD_RUN,
+                 systemctl: str = DEFAULT_SYSTEMCTL, bind_to: str = HELPER_UNIT,
+                 output_cap: int = OUTPUT_CAP_BYTES):
+        self.odysseus_dir = os.path.normpath(odysseus_dir) if odysseus_dir else ""
+        self.systemd_run = systemd_run
+        self.systemctl = systemctl
+        self.bind_to = bind_to
+        self.output_cap = output_cap
+
+    def unit_argv(self, unit: str, words, timeout_s: int) -> list:
+        """The systemd-run command line for `words`."""
+        inaccessible = list(WALL_INACCESSIBLE) + ([self.odysseus_dir] if self.odysseus_dir else [])
+        argv = [self.systemd_run, "--quiet", "--pipe", "--wait", "--collect", "--service-type=exec",
+                f"--unit={unit}", "--working-directory=/root",
+                "-p", f"RuntimeMaxSec={int(timeout_s)}",
+                "-p", "UMask=0022",
+                "-p", "InaccessiblePaths=" + " ".join("-" + p for p in inaccessible),
+                "-p", "ReadOnlyPaths=" + " ".join("-" + p for p in WALL_READ_ONLY),
+                "-p", "CapabilityBoundingSet=~" + " ".join(WALL_DROPPED_CAPS)]
+        if self.bind_to:
+            # Stopping the helper (the kill switch) stops the command too.
+            argv += ["-p", f"BindsTo={self.bind_to}", "-p", f"After={self.bind_to}"]
+        for key, value in RUN_ENV.items():
+            argv.append(f"--setenv={key}={value}")
+        return argv + ["--", *words]
+
+    async def _stop(self, unit: str, proc) -> None:
+        try:
+            stopper = await asyncio.create_subprocess_exec(
+                self.systemctl, "stop", unit, stdin=asyncio.subprocess.DEVNULL,
+                stdout=asyncio.subprocess.DEVNULL, stderr=asyncio.subprocess.DEVNULL)
+            await asyncio.wait_for(stopper.wait(), timeout=STOP_GRACE_S * 4)
+        except (OSError, asyncio.TimeoutError):
+            pass
+        for sig in (signal.SIGTERM, signal.SIGKILL):
+            try:
+                os.killpg(proc.pid, sig)
+            except (ProcessLookupError, PermissionError):
+                return
+            try:
+                await asyncio.wait_for(proc.wait(), timeout=STOP_GRACE_S)
+                return
+            except asyncio.TimeoutError:
+                pass
+
+    async def run(self, words, timeout_s: int, reader) -> dict:
+        unit = f"creator-root-cmd-{secrets.token_hex(4)}.service"
+        started = time.monotonic()
+        proc = await asyncio.create_subprocess_exec(
+            *self.unit_argv(unit, words, timeout_s),
+            stdin=asyncio.subprocess.DEVNULL,
+            stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE,
+            start_new_session=True)
+        out, err = _Capped(self.output_cap), _Capped(self.output_cap)
+        readers = [asyncio.ensure_future(out.drain(proc.stdout)),
+                   asyncio.ensure_future(err.drain(proc.stderr))]
+        exited = asyncio.ensure_future(proc.wait())
+        gone = asyncio.ensure_future(reader.read(1))   # b"" once the client closes
+        timed_out = disconnected = False
+        try:
+            # systemd's RuntimeMaxSec ends it at the limit; this is the backstop.
+            done, _ = await asyncio.wait({exited, gone}, timeout=timeout_s + STOP_GRACE_S * 2,
+                                         return_when=asyncio.FIRST_COMPLETED)
+            if exited not in done:
+                if gone in done:
+                    disconnected = True
+                else:
+                    timed_out = True
+                await self._stop(unit, proc)
+        finally:
+            gone.cancel()
+            exited.cancel()
+            await asyncio.wait(readers, timeout=STOP_GRACE_S)
+            for r in readers:
+                r.cancel()
+        duration = time.monotonic() - started
+        code = proc.returncode
+        if not timed_out and not disconnected and duration >= timeout_s and code not in (0, None):
+            timed_out = True   # ended by RuntimeMaxSec
+        return {
+            "unit": unit,
+            "exit_code": code,
+            "stdout": out.text(),
+            "stderr": err.text(),
+            "stdout_bytes": out.total,
+            "stderr_bytes": err.total,
+            "truncated": out.total > out.cap or err.total > err.cap,
+            "duration_s": round(duration, 3),
+            "timed_out": timed_out,
+            "disconnected": disconnected,
+        }
 
 
 # ---------------------------------------------------------------------------
@@ -793,7 +997,8 @@ def check_socket_folder(path: str, owner_uid: int) -> None:
 
 class RootHelper:
     def __init__(self, switch: RootSwitch, audit: AuditLog, socket_path: str, allow_uids,
-                 control_socket_path: str, control_uids=(0,), owner_uid=None, watchdog: Watchdog = None):
+                 control_socket_path: str, control_uids=(0,), owner_uid=None, watchdog: Watchdog = None,
+                 runner: "RootRunner" = None):
         allow = frozenset(int(u) for u in allow_uids)
         if not allow:
             raise ValueError("refusing to start with no --allow-uid: nobody could use it")
@@ -802,6 +1007,9 @@ class RootHelper:
         self.switch = switch
         self.audit = audit
         self.watchdog = watchdog or Watchdog(DEFAULT_WATCHDOG_FILE, owner_uid=owner_uid)
+        self.runner = runner or RootRunner(self.watchdog.odysseus_dir)
+        self._run_lock = asyncio.Lock()
+        self._denials = 0
         self.socket_path = socket_path
         self.control_socket_path = control_socket_path
         self.allow_uids = allow
@@ -818,9 +1026,8 @@ class RootHelper:
             "helper": "creator-root-helper",
             "version": VERSION,
             "capabilities": list(CAPABILITIES),
-            # 5b/5c: the switch and the watchdog. Nothing runs as root through
-            # this helper yet (5d).
-            "runs_commands": False,
+            # 5d: root commands run, each judged by the watchdog first.
+            "runs_commands": True,
             "uptime_s": int(time.time() - self.started),
             **self.switch.status(),
         }
@@ -833,6 +1040,7 @@ class RootHelper:
         if rtype == "status":
             return {"ok": True, "type": "status", **self.switch.status()}
         if rtype == "enable":
+            self._denials = 0
             if control:
                 return {"type": "enable", **self.switch.enable_from_control(request.get("minutes"))}
             return {"type": "enable", **self.switch.enable_with_code(request.get("code"), request.get("minutes"))}
@@ -850,6 +1058,68 @@ class RootHelper:
             return {"type": "watchdog_save", **self.save_watchdog(request, via)}
         caps = CONTROL_CAPABILITIES if control else CAPABILITIES
         return {"ok": False, "error": f"unknown request type: {str(rtype)[:40]!r}", "capabilities": list(caps)}
+
+    def denied(self, request: dict) -> dict:
+        """You denied a root command in Odysseus. MAX_DENIALS in a row switch
+        root off; a command that runs starts the count again."""
+        self._denials += 1
+        off = False
+        if self._denials >= MAX_DENIALS:
+            off = self.switch.revoke("odysseus", why=f"{MAX_DENIALS} root commands denied in a row")["was_on"]
+            self._denials = 0
+        return {"ok": True, "type": "denied", "denials": self._denials, "root_switched_off": off,
+                **self.switch.status()}
+
+    async def handle_run(self, request: dict, reader, entry: dict) -> dict:
+        """Judge, then run. The verdict is the helper's own, made now: nothing
+        Odysseus says about it counts, except that you approved an
+        approval-tier command (`approved`)."""
+        command = request.get("command")
+        approved = request.get("approved") is True
+        redact = request.get("redact") or []
+        if not isinstance(redact, list) or len(redact) > MAX_REDACT_VALUES:
+            return {"ok": False, "reason": "bad_request",
+                    "error": f"redact must be a list of at most {MAX_REDACT_VALUES} strings"}
+        redact = [v for v in redact if isinstance(v, str) and len(v) >= 4]
+        try:
+            verdict = self.watchdog.judge(command)
+        except ValueError as e:
+            return {"ok": False, "reason": "bad_request", "error": str(e)}
+        tier = verdict["tier"]
+        entry.update(command=blank(command, redact)[:AUDIT_PREVIEW_CHARS], tier=tier, approved=approved)
+        base = {"type": "run", "tier": tier, "verdict_reason": verdict["reason"]}
+        if tier == "refused":
+            was_on = self.switch.revoke("odysseus", why=f"refused command ({verdict['refused_by']})")["was_on"]
+            entry["refused_by"] = verdict["refused_by"]
+            return {**base, "ok": False, "reason": "refused", "refused_by": verdict["refused_by"],
+                    "root_switched_off": was_on,
+                    "error": f"Refused by the watchdog: {verdict['reason']}"
+                             + (" Root has been switched off." if was_on else "")}
+        if not self.switch.is_on():
+            return {**base, "ok": False, "reason": "root_off",
+                    "error": "Root is off. It has to be switched on (with a code) before a root command runs."}
+        if tier == "approval" and not approved:
+            return {**base, "ok": False, "reason": "needs_approval",
+                    "error": f"This root command needs your approval: {verdict['reason']}"}
+        if self._run_lock.locked():
+            return {**base, "ok": False, "reason": "busy", "error": "busy: another root command is running"}
+        words = verdict["run_argv"] if tier == "automatic" else ["/bin/bash", "-c", command]
+        timeout_s = verdict["max_command_s"]
+        self._denials = 0
+        async with self._run_lock:
+            try:
+                result = await self.runner.run(words, timeout_s, reader)
+            except OSError as e:
+                return {**base, "ok": False, "reason": "start_failed",
+                        "error": f"could not start the command: {e.strerror or e}"}
+        entry.update(
+            words=[blank(w, redact) for w in words][:50], unit=result["unit"], exit_code=result["exit_code"],
+            duration_s=result["duration_s"], timed_out=result["timed_out"],
+            disconnected=result["disconnected"], stdout_bytes=result["stdout_bytes"],
+            stderr_bytes=result["stderr_bytes"],
+            stdout_preview=blank(result["stdout"][:AUDIT_PREVIEW_CHARS], redact),
+            stderr_preview=blank(result["stderr"][:AUDIT_PREVIEW_CHARS], redact))
+        return {**base, "ok": True, "timeout_s": timeout_s, **result}
 
     def save_watchdog(self, request: dict, via: str) -> dict:
         """New watchdog settings. A change that loosens it needs a code from
@@ -929,7 +1199,14 @@ class RootHelper:
                 entry["minutes"] = request.get("minutes") if isinstance(request.get("minutes"), int) else None
             if request.get("type") == "check" and isinstance(request.get("command"), str):
                 entry["command"] = request["command"][:2000]
-            reply = self.answer(request, control)
+            if request.get("type") == "run" and not control:
+                reply = await self.handle_run(request, reader, entry)
+            elif request.get("type") == "denied" and not control:
+                if isinstance(request.get("command"), str):
+                    entry["command"] = request["command"][:2000]
+                reply = self.denied(request)
+            else:
+                reply = self.answer(request, control)
             entry.update(ok=reply.get("ok"), error=reply.get("error"), reason=reply.get("reason"))
             if reply.get("tier"):
                 entry["tier"] = reply["tier"]
@@ -1009,7 +1286,9 @@ async def _serve(args) -> None:
     audit = AuditLog(args.audit_log)
     switch = RootSwitch(TotpVerifier(args.key_file, args.state_file), audit, max_minutes=args.max_minutes)
     watchdog = Watchdog(args.watchdog_file, odysseus_dir=args.odysseus_dir)
-    helper = RootHelper(switch, audit, args.socket, args.allow_uid, args.control_socket, watchdog=watchdog)
+    runner = RootRunner(args.odysseus_dir)
+    helper = RootHelper(switch, audit, args.socket, args.allow_uid, args.control_socket, watchdog=watchdog,
+                        runner=runner)
     await helper.start()
     problem = switch.verifier.problem()
     print(f"creator-root-helper {VERSION}: listening on {args.socket} for uid(s) {sorted(helper.allow_uids)}, "

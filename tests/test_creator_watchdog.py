@@ -292,7 +292,7 @@ def test_check_judges_and_never_switches_root_off(in_tmp):
     async def go():
         hello = await _raw(SOCK, {"type": "hello"})
         assert {"check", "watchdog", "watchdog_save"} <= set(hello["capabilities"])
-        assert hello["runs_commands"] is False and hello["version"] == 2
+        assert hello["runs_commands"] is True and hello["version"] == 3
         assert (await _raw(CONTROL, {"type": "enable", "minutes": 10}))["on"] is True
         reply = await _raw(SOCK, {"type": "check", "command": "apt-get install curl"})
         assert reply["ok"] and reply["tier"] == "automatic" and reply["max_command_s"] == 900
