@@ -184,8 +184,8 @@ what access is missing in the report.
 
 # Phase 5d: commands on the host as root, through the root helper, which
 # judges each one (the watchdog) before it runs.
-ROOT_OFF_REASON = ("Root is off. Switch it on in the header (Root: off), then Approve once to run this "
-                   "root command. The watchdog says: {verdict}")
+ROOT_OFF_REASON = ("Root is off. Switch it on in the header (Root: off), then Run as root once to run "
+                   "this root command. The watchdog says: {verdict}")
 ROOT_APPROVAL_REASON = "Root command: it runs on the host as root, and the watchdog says it needs your approval ({why})."
 ROOT_TIER_LABELS = {"automatic": "automatic", "approval": "needs your approval", "refused": "refused"}
 CREATOR_ROOT_PROMPT = """
@@ -904,7 +904,8 @@ class CreatorManager:
             return ROOT_OFF_REASON.format(
                 verdict=f"{ROOT_TIER_LABELS.get(tier, tier)}: {verdict.get('reason') or ''}".strip())
         if tier == "approval":
-            return ROOT_APPROVAL_REASON.format(why=verdict.get("reason") or "not an automatic form")
+            why = (verdict.get("reason") or "not an automatic form").rstrip(".")
+            return ROOT_APPROVAL_REASON.format(why=why)
         return None
 
     async def run_as_root(self, job_id: Optional[str], owner: Optional[str], command: str) -> dict:
