@@ -72,6 +72,7 @@ _COMMON_TOOL_NAMES = {
     "get_secret",
     "host_exec",
     "run_as_root",
+    "creator_jobs",
     "load_tools",
     "glob",
     "grep",

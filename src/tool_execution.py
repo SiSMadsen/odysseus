@@ -1257,6 +1257,10 @@ async def _execute_tool_block_impl(
         from src.creator_host_helper import do_host_exec
         desc = "host_exec"
         result = await do_host_exec(content, owner=owner, session_id=session_id)
+    elif tool == "creator_jobs":
+        from src.creator_memory import do_creator_jobs
+        desc = "creator_jobs"
+        result = do_creator_jobs(content, owner=owner)
     elif tool == "run_as_root":
         from src.creator_root_helper import do_run_as_root
         desc = "run_as_root"

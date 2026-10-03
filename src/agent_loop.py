@@ -701,6 +701,7 @@ Generate an image. Line 1 = description, line 2 = model name, line 3 = WxH (e.g.
     "load_tools": "- ```load_tools``` — Your tool list for this turn is a selection. If you need a tool that isn't in it, load it instead of giving up or asking the user to send another message. Args (JSON): {\"names\": [\"send_email\"]} loads tools (usable from your next step); {\"search\": \"email\"} lists matching tool names; {} lists all loadable tools.",
     "get_secret": "- ```get_secret``` — Creator mode only. Get a password/token the user stored in Settings > Secrets. Args (JSON): {\"name\": \"<secret name>\"}. Fails if the secret is switched off — then tell the user which secret you need switched on. Never echo the value or write it into files, notes or the report; pass it straight to the command that needs it.",
     "host_exec": "- ```host_exec``` — Creator mode only. Run ONE shell command on the HOST machine (outside the container) as the unprivileged user `creator`. Args (JSON): {\"command\": \"<shell command>\", \"timeout_s\": 120}. No stdin, fresh shell each call, background processes are stopped when it ends. Each call waits for the user's OK unless they allowed all host commands for this job.",
+    "creator_jobs": "- ```creator_jobs``` — Read-only: the user's Creator jobs (admin tasks Creator mode ran on their server). Args (JSON): {\"action\": \"list\"} (newest first) or {\"action\": \"read\", \"id\": \"cr-…\"} for a job's full report: what was asked, done, changed, the exact commands, what's left. Use when the user asks what Creator did.",
     "run_as_root": "- ```run_as_root``` — Creator mode only. Run ONE command on the HOST machine as root, through the root helper. Args (JSON): {\"command\": \"<command>\"}. Plain `apt-get update|upgrade|install <packages>` and `chmod`/`chown` inside the allowed folders run straight away; anything else waits for the user's approval; commands that touch the helpers, sudo, accounts or SSH are refused and switch root off. Root must be on (the user switches it on).",
     "manage_settings": "- ```manage_settings``` — View/change the REAL app settings (same ones the Settings panel writes) AND turn tools on/off. Change a setting: `{\"action\":\"set\",\"key\":\"...\",\"value\":\"...\"}` — keys accept friendly aliases, e.g. voice→tts_voice, \"search engine\"→search_provider, \"default model\"→default_model, \"teacher model\"→teacher_model, \"task/background model\"→task_model, \"image quality\"→image_quality, \"reminder channel\"→reminder_channel (browser|email|ntfy), \"agent timeout\"/\"max tool calls\"/\"token budget\". Read: `{\"action\":\"get\",\"key\":\"...\"}`; see all: `{\"action\":\"list\"}`; reset one: `{\"action\":\"reset\",\"key\":\"...\"}`. Use this when the user asks to change ANY preference instead of making them open Settings. Secrets/API keys are read-only (tell them to set those in the panel). Tool toggles: `{\"action\":\"disable_tool|enable_tool\",\"tool\":\"shell\"}` (aliases: shell/search/browser/documents/memory/skills/images/tasks/notes/calendar/email), list disabled: `{\"action\":\"list_tools\"}`.",
     "manage_notes": """\
@@ -2240,8 +2241,11 @@ def _build_system_prompt(
     suppress_skills: bool = False,
     active_email: Optional[Dict[str, str]] = None,
     workspace: Optional[str] = None,
+    skill_query: Optional[str] = None,
 ) -> List[Dict]:
-    """Build agent system prompt, inject MCP/document context, merge consecutive system msgs."""
+    """Build agent system prompt, inject MCP/document context, merge consecutive system msgs.
+    `skill_query`: what relevant skills are matched on (default: the latest
+    user message)."""
     global _cached_base_prompt, _cached_base_prompt_key
     if suppress_local_context:
         active_document = None
@@ -2628,7 +2632,7 @@ def _build_system_prompt(
     # before deciding which tool to call.
     if not suppress_local_context and not suppress_skills:
         try:
-            last_user = _extract_last_user_message(messages)
+            last_user = skill_query or _extract_last_user_message(messages)
             # Respect the user's skills-enabled toggle (mirrors memory_enabled).
             # When off, don't inject relevant skills into the prompt.
             _skills_on = True
@@ -3461,6 +3465,9 @@ async def stream_agent_loop(
     caller_approved_check=None,
     teacher_escalation: bool = True,
     stop_on_missing_workspace: bool = True,
+    # Match relevant skills on this instead of the latest user message.
+    # Creator passes its task: its later segments end on its own notes.
+    skill_query: Optional[str] = None,
 ) -> AsyncGenerator[str, None]:
     """Streaming agent loop generator.
 
@@ -4335,6 +4342,7 @@ async def stream_agent_loop(
             suppress_skills=_low_signal_turn,
             active_email=active_email,
             workspace=workspace,
+            skill_query=skill_query,
         )
         if doc_mode and not plan_mode and not approved_plan and not guide_only:
             route_messages = _minimal_odysseus_doc_messages(

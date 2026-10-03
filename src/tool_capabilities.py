@@ -211,6 +211,13 @@ _register(
     result_integrity=ResultIntegrity.EXTERNAL_UNTRUSTED,
 )
 _register(
+    # Read-only: the caller's own Creator jobs and their reports (Phase 9).
+    # Reports quote command output from the server: outside text.
+    {"creator_jobs"},
+    ToolEffect.READ_PRIVATE,
+    result_integrity=ResultIntegrity.EXTERNAL_UNTRUSTED,
+)
+_register(
     # Creator mode: a command on the HOST as root, through the root helper,
     # which judges it first (Phase 5d). Same effects as host_exec, as root.
     {"run_as_root"},

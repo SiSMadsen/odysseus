@@ -128,8 +128,10 @@ async def maybe_extract_skill(
     round_count: int,
     tool_count: int,
     owner: Optional[str] = None,
+    source: str = "learned",
 ):
-    """Extract a skill if the agent run was complex enough."""
+    """Extract a skill if the agent run was complex enough. `source` marks
+    where it was learned ("creator" for Creator jobs)."""
     if not model:
         logger.debug("[skill-extract] No model provided, skipping")
         return None
@@ -279,7 +281,7 @@ async def maybe_extract_skill(
             solution=data.get("solution", ""),
             steps=data.get("steps", []),
             tags=data.get("tags", []),
-            source="learned",
+            source=source,
             confidence=data.get("confidence", 0.7),
             session_id=getattr(session, "session_id", None),
             owner=owner,

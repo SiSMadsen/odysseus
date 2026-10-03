@@ -1107,6 +1107,22 @@ FUNCTION_TOOL_SCHEMAS = [
     {
         "type": "function",
         "function": {
+            "name": "creator_jobs",
+            "description": "Read-only access to the user's Creator jobs (admin tasks Creator mode ran on their server): list them, or read one job's full report (what was asked, what was done, the exact commands, what's left). Use when the user asks what Creator did, changed or installed. Can't start, approve or stop jobs.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "action": {"type": "string", "enum": ["list", "read"], "description": "list (newest first) or read"},
+                    "id": {"type": "string", "description": "For read: the job id, e.g. cr-0123456789ab"},
+                    "limit": {"type": "integer", "description": "For list: how many (default 10, max 50)"},
+                },
+                "required": ["action"]
+            }
+        }
+    },
+    {
+        "type": "function",
+        "function": {
             "name": "run_as_root",
             "description": "Creator mode only: run one command on the HOST machine as root, through the root helper. Its watchdog judges each command first: plain `apt-get update|upgrade|install <packages>` and `chmod`/`chown` inside the allowed folders run straight away; anything else waits for the user's approval; commands touching the helpers, sudo, accounts or SSH are refused and switch root off. Root must be switched on by the user. No stdin. Returns output and exit code.",
             "parameters": {

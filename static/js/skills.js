@@ -206,6 +206,9 @@ function _statusPill(sk) {
 // hand-authored vs auto-generated so they can audit (and demote /
 // edit / publish) before trusting them.
 function _sourcePill(sk) {
+  if (sk.source === 'creator') {
+    return '<span class="memory-cat-badge" title="Learned from a finished Creator job">from Creator</span>';
+  }
   if (sk.source !== 'teacher-escalation') return '';
   const teacher = sk.teacher_model || 'teacher';
   return `<span class="memory-cat-badge" title="Created by teacher escalation: ${esc(teacher)}" style="background:color-mix(in srgb, var(--color-warning, #f0ad4e) 22%, transparent);">teacher-created</span>`;

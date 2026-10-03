@@ -715,8 +715,12 @@ app.include_router(setup_research_routes(research_handler, session_manager=sessi
 
 # Creator mode (long autonomous agent jobs)
 from src.creator_mode import CreatorManager
+from src.creator_memory import CreatorMemory
 from routes.creator_routes import setup_creator_routes
-creator_manager = CreatorManager()
+# Phase 9: jobs get the owner's memories and skills, and leave memories and
+# skills behind, in the same stores chat uses.
+creator_manager = CreatorManager(memory=CreatorMemory(
+    memory_manager, memory_vector, chat_processor, skills_manager))
 app.state.creator_manager = creator_manager
 app.include_router(setup_creator_routes(creator_manager))
 

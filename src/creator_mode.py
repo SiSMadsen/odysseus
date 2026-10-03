@@ -68,6 +68,9 @@ CREATOR_CORE_TOOLS = frozenset({
     "todowrite", "grep", "glob", "ls", "get_workspace", "manage_bg_jobs",
     "web_search", "web_fetch",
     "ask_user", "update_plan", "get_secret", "load_tools",
+    # Phase 9: recall and save facts in the shared Odysseus memory, read the
+    # owner's earlier Creator jobs.
+    "manage_memory", "creator_jobs",
 })
 # Same command failing the same way this many times → refused from then on.
 FAILURE_LIMIT = 3
@@ -148,6 +151,12 @@ calendar, settings, ...), call `load_tools` to load it instead of giving up.
 - Some actions need the user's OK first (protected paths, or actions after \
 reading untrusted content). The run pauses for that by itself; carry on \
 when it continues.
+- You share the user's Odysseus memory and skills. Saved memories and skills \
+that match the task may be given to you: use them as background (where \
+things are, how the user likes things done), but check what matters on the \
+machine before relying on it. `creator_jobs` reads your earlier jobs' \
+reports. Your report is remembered after the job, so you don't need to save \
+it; use `manage_memory` only for a durable fact the user would want kept.
 
 When you are finished, write a final report with exactly these headings:
 ## What was done
@@ -548,6 +557,7 @@ class CreatorManager:
         tool_executor: Optional[Callable] = None,
         host_helper=None,
         root_helper=None,
+        memory=None,
     ):
         global _active_manager
         self._session_factory = session_factory
@@ -557,6 +567,9 @@ class CreatorManager:
         # Module-like object with async hello()/run()/denied() and
         # check_sync() (src/creator_root_helper).
         self._root_helper = root_helper
+        # src.creator_memory.CreatorMemory (the app's memory and skills), or
+        # None: then jobs neither get nor leave memories and skills.
+        self._memory = memory
         self._audit_directory = audit_directory
         self._tool_executor = tool_executor
         self.secrets = secret_store or SecretStore(session_factory)
@@ -565,6 +578,8 @@ class CreatorManager:
         # round-trip.
         self._live: Dict[str, dict] = {}
         self._stopping: Set[str] = set()
+        # After-job memory/skill work still running (kept so it isn't collected).
+        self._after_tasks: Set[asyncio.Task] = set()
         self._mark_orphans()
         _active_manager = self
 
@@ -822,6 +837,9 @@ class CreatorManager:
             # root helper answers. root_approved: the one root command you
             # just approved, handed to run_as_root once.
             "allow_root": bool(allow_root), "root_available": False, "root_approved": None,
+            # Phase 9: the owner's saved memories that matter for the task,
+            # given to every segment (chosen once, at the start).
+            "memory_messages": self._memory_for(task, owner),
         }
         live = self._live[job_id]
 
@@ -876,6 +894,41 @@ class CreatorManager:
         if not reply.get("ok"):
             return {"error": f"Host helper refused: {reply.get('error') or 'no reason given'}", "exit_code": 1}
         return format_run_result(reply)
+
+    def _memory_for(self, task: str, owner: str) -> List[dict]:
+        if self._memory is None:
+            return []
+        try:
+            return self._memory.context_messages(task, owner)
+        except Exception:
+            logger.warning("Creator: could not load memories", exc_info=True)
+            return []
+
+    def _remember(self, job_id: str, owner: str, report_data: dict, endpoint_url: str, model: str,
+                  headers: dict, tool_calls: int, rounds: int) -> None:
+        """After a job: its memory, facts and skill, in the background."""
+        if self._memory is None:
+            return
+
+        async def go():
+            try:
+                done = await self._memory.after_job(job_id, owner, report_data, endpoint_url, model, headers,
+                                                    tool_calls=tool_calls, rounds=rounds)
+            except Exception:
+                logger.warning("Creator: after-job memory failed for %s", job_id, exc_info=True)
+                return
+            try:
+                AuditLog(job_id, Redactor(), self._audit_directory).write(
+                    {"at": _now_iso(), "type": "remembered", **done})
+            except Exception:
+                logger.debug("Creator: could not log what was remembered", exc_info=True)
+
+        try:
+            task = asyncio.get_running_loop().create_task(go())
+            self._after_tasks.add(task)
+            task.add_done_callback(self._after_tasks.discard)
+        except RuntimeError:
+            pass
 
     def _root_gate(self, content) -> Optional[str]:
         """Whether a run_as_root call pauses: when root is off (you switch it
@@ -1275,6 +1328,9 @@ class CreatorManager:
                 # "No active workspace is set" reply (Phase 8 test 3, job
                 # cr-42c6fd9b6a56: finished in 12 ms, no model call).
                 stop_on_missing_workspace=False,
+                # Skills are matched on the task, not on the latest message
+                # (a later segment's is Creator's own notes).
+                skill_query=prompt_task,
                 relevant_tools=job_tools(),
                 forced_tools=job_tools(),
                 # Known secret values are blanked from tool results before the
@@ -1513,6 +1569,7 @@ class CreatorManager:
                           "report and a STATUS line."]
             msgs = [
                 {"role": "system", "content": system_prompt()},
+                *live["memory_messages"],
                 {"role": "user", "content": prompt_task},
             ]
             if previous_text:
@@ -1534,11 +1591,14 @@ class CreatorManager:
                          + ". Each action touching one asks you, every time.", "auto")
             await probe_host()
             await probe_root()
+            if live["memory_messages"]:
+                add_note("Given your saved memories that match this task (as in chat).", "auto")
             if live["host_available"] and live["host_all_approved"]:
                 add_note("All host commands are allowed for this job (chosen at start): "
                          "host_exec won't ask before each one.", "auto")
             messages = [
                 {"role": "system", "content": system_prompt()},
+                *live["memory_messages"],
                 {"role": "user", "content": prompt_task},
             ]
             while True:
@@ -1681,6 +1741,8 @@ class CreatorManager:
             self._live.pop(job_id, None)
             self._stopping.discard(job_id)
         logger.info("Creator: job %s finished with status %s", job_id, outcome["status"])
+        self._remember(job_id, owner, report_data, endpoint_url, model, headers,
+                       live["tool_calls"], live["rounds"])
 
     @staticmethod
     def _retire_approval(approval_id, owner: str, job_id: str) -> None:

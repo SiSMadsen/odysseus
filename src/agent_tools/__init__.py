@@ -114,6 +114,8 @@ TOOL_TAGS = {"bash", "python", "web_search", "web_fetch", "read_file", "write_fi
              "host_exec",
              # Creator mode: one command on the host as root via the root helper.
              "run_as_root",
+             # Read-only: the user's Creator jobs and reports (also in chat).
+             "creator_jobs",
              # Pull a tool the turn's selection missed into the tool list.
              "load_tools",
              # Generic loopback to any UI-button endpoint (cookbook,
