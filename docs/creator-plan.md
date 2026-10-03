@@ -3,6 +3,29 @@
 Status (2026-10-03, branch `creator-mode`): Phases 1–4, 6, 7 and 8 are done. **Phase 5 (root), redesigned: 5a and 5b built and installed; 5c (the watchdog) designed and decided below, no code yet; then 5d.** Polishing items are listed before Phase 8.
 Items marked **[CHECK]** are things not yet looked at, so their size isn't known.
 
+## Notes for whoever continues
+**How the work has been done**
+- Each Phase 5 step is talked through with the owner and decided before any code is written; the decisions go in this file first (see 5b and 5c).
+- After each step: commit on `creator-mode`, update this file, then the owner rebuilds and tests it live. The live tests found most of the real bugs, so expect findings and record them here.
+- Everything is on the `creator-mode` branch; nothing is merged into `main`.
+
+**Running the tests on this host**
+- The host has no pip, and Docker needs sudo. What works: `python3 -m venv --without-pip <dir>`, pip via `get-pip.py`, then `pip install -r requirements.txt` and `<dir>/bin/python -m pytest tests/...`. For the JS tests (`tests/*_js.py`, skipped without node): `pip install nodejs-wheel-binaries` and put its `node` on PATH.
+- 10 tests fail on this branch for reasons unrelated to Creator: `test_token_cache_atomic_swap.py` (5), `test_fenced_example_not_executed_for_native_models.py` (2), `test_external_context_tool_gate::test_authorized_document_stream_precedes_completed_update`, `test_settings_shell_js_behavior`, `test_docs_no_orphan_images::test_pages_site_owns_its_entrypoint_and_media`. The first 7 fail only because `app.py` picks up the real `data/` folder; they pass in a clean `git worktree`. Anything beyond these 10 is new.
+- The Creator window's browser-level tests (jsdom) are not in the repo: they were throwaway scripts (see Polishing). Only the window's helper functions are tested on every run.
+- The route tests build start requests with `SimpleNamespace`. Adding a field to `CreatorStartRequest` means adding it to those bodies in `tests/test_creator_mode.py` and `tests/test_creator_phase2.py`.
+
+**After changing things**
+- Rebuild: `sudo docker compose up -d --build`, then reload the page twice (or Ctrl+Shift+R): the service worker serves the old page first.
+- After every rebuild, run the 5a check: `sudo docker compose exec -u odysseus odysseus python -m src.tool_user --check` (all PASS). It found that upstream startup code had silently undone the work folder's sharing; other upstream code can do the same.
+- The host helpers are not updated by a rebuild. After changing `host_helper/creator_helper.py` or `host_helper/root_helper.py`, copy it to `/opt/creator-helper/` or `/opt/creator-root/` and restart `creator-helper` or `creator-root-helper`. Both must use the Python standard library only (the host has no pip; Python 3.11).
+- `.env` already has both overlays in `COMPOSE_FILE` (`docker/creator-helper.yml`, `docker/creator-root-helper.yml`).
+
+**Things that matter for 5c and 5d**
+- The root helper's unit (`host_helper/creator-root-helper.service`) is locked down hard on purpose, because in 5b it runs nothing. 5d has to loosen it deliberately when root commands start running, and update the README's root helper section with it.
+- Approval gates are kept separate on purpose: untrusted content and host commands each have their own "allow for this job" (and an up-front checkbox), and protected paths always ask. Root approvals are decided as one command at a time, never "allow all" (5c decision 2).
+- Root routes are admin-only, browser-session only (no API tokens), and fail closed with log-in turned off (5b decision 2).
+
 ## Purpose, scope and safeguards (read this first)
 **What this is.** Creator mode is a feature of my own self-hosted Odysseus install (a fork of the open-source Odysseus app), running in Docker on my own Debian machine. I'm its only owner and administrator. It lets an AI agent that I start carry out admin tasks on this one machine for me (install a package, edit a config file, fix a web page), and report back what it did. It does the same work I'd otherwise do by hand in a terminal, with me in control.
 
