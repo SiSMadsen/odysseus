@@ -250,13 +250,30 @@ if [ "$REBUILD" = 1 ]; then
     tail -n 15 /tmp/creator-upkeep-build.log | sed 's/^/        /'
   fi
 fi
-in_app() { sudo docker compose exec -T -u odysseus odysseus "$@"; }
+# Docker's own warnings (e.g. an unset variable in .env) are left out of the
+# messages; the command's exit code is kept.
+in_app() {
+  sudo docker compose exec -T -u odysseus odysseus "$@" 2>&1 | grep -v 'level=warning msg='
+  return "${PIPESTATUS[0]}"
+}
+# Ready means the app answers on its port inside the container. Being able to
+# run python there isn't enough: the entrypoint sets up the tool user (5a)
+# before it starts the app, and a check run earlier finds no tool user.
 ready=0
-for _ in $(seq 1 60); do
-  if in_app python -c "print('ok')" >/dev/null 2>&1; then ready=1; break; fi
+for _ in $(seq 1 90); do
+  if in_app python -c "
+import sys, urllib.error, urllib.request
+try:
+    urllib.request.urlopen('http://127.0.0.1:7000/', timeout=3)
+except urllib.error.HTTPError:
+    pass   # any HTTP answer means the app is up
+except Exception:
+    sys.exit(1)
+" >/dev/null; then ready=1; break; fi
   sleep 2
 done
-if [ "$ready" = 1 ]; then pass "the odysseus container is up"; else fail "the odysseus container isn't answering (sudo docker compose ps)"; fi
+if [ "$ready" = 1 ]; then pass "the odysseus app is up and answering"; else
+  fail "the odysseus app isn't answering after 3 minutes (sudo docker compose ps; sudo docker compose logs --tail 50 odysseus)"; fi
 
 # ---------------------------------------------------------------------------
 section "5. Inside the container"
