@@ -30,12 +30,16 @@ RestartSec=5
 # root, over systemd's own socket) to start each root command in its own
 # short-lived unit (systemd-run), with that unit's own walls (5d). The
 # commands are not its children, so none of this has to be loosened for them.
-# - No capabilities at all: as the owner of its own files it needs none.
+# - One capability, read-only: CAP_DAC_READ_SEARCH, so it can read the files
+#   Creator staged in the host helper's work folder (creator's, mode 0700)
+#   to show them on the root approval card (9d). It reads nothing else with
+#   it: only regular, single-link files of the folder's owner, inside it.
+#   Nothing else: as the owner of its own files it needs nothing more.
 # - No network: it listens only on its two Unix sockets.
 # - Writable: only its socket folder and the directories above. /etc (the
 #   TOTP key) is read-only to it; /home is invisible.
 NoNewPrivileges=yes
-CapabilityBoundingSet=
+CapabilityBoundingSet=CAP_DAC_READ_SEARCH
 AmbientCapabilities=
 PrivateNetwork=yes
 RestrictAddressFamilies=AF_UNIX

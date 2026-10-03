@@ -373,7 +373,7 @@ def test_root_and_nobody_are_never_allowed_on_the_odysseus_socket(in_tmp):
 
 def test_unit_file_and_overlay():
     unit = (_HELPER_PATH.parent / "creator-root-helper.service").read_text()
-    for line in ("User=root", "serve --allow-uid 1000", "NoNewPrivileges=yes", "CapabilityBoundingSet=\n",
+    for line in ("User=root", "serve --allow-uid 1000", "NoNewPrivileges=yes", "CapabilityBoundingSet=CAP_DAC_READ_SEARCH\n",
                  "PrivateNetwork=yes", "RestrictAddressFamilies=AF_UNIX\n", "ProtectSystem=strict",
                  "ReadWritePaths=/srv/creator-root\n", "ProtectHome=yes", "RuntimeDirectoryMode=0700",
                  "StateDirectoryMode=0700", "LogsDirectoryMode=0700"):
