@@ -55,8 +55,14 @@ def create_directories():
     resolved_workspace = os.path.realpath(workspace)
     if resolved_workspace != expected_workspace:
         raise RuntimeError("agent workspace must be the canonical child of DATA_DIR")
+    # Private to the app, unless the agent's commands run as a separate tool
+    # user (Phase 5a): then docker/entrypoint.sh shares this folder with the
+    # tool group (setgid + group ACL), and 0700 here would undo that (the ACL
+    # mask follows the group bits), locking the agent out of its work folder.
+    from src.tool_user import tool_group, tool_user
+    mode = 0o2770 if tool_user() and tool_group() else 0o700
     try:
-        os.chmod(workspace, 0o700)
+        os.chmod(workspace, mode)
     except OSError:
         pass
 

@@ -274,3 +274,32 @@ def test_file_tools_refuse_the_apps_secret_files(name):
         te._active_workspace.reset(token)
     # The agent's own work folder stays open.
     assert te._resolve_tool_path(os.path.join(DATA_DIR, "agent_workspace", "notes.txt"))
+
+
+def _startup_dirs(tmp_path, monkeypatch):
+    import src.app_initializer as app_initializer
+    data = tmp_path / "data"
+    monkeypatch.setattr(app_initializer, "DATA_DIR", str(data))
+    monkeypatch.setattr(app_initializer, "PERSONAL_DIR", str(data / "personal_docs"))
+    monkeypatch.setattr(app_initializer, "RUNBOOK_DIR", str(data / "personal_docs" / "runbook"))
+    monkeypatch.setattr(app_initializer, "UPLOAD_DIR", str(data / "uploads"))
+    monkeypatch.setattr(app_initializer, "AGENT_WORKSPACE_DIR", str(data / "agent_workspace"))
+    data.mkdir()
+    return app_initializer, data / "agent_workspace"
+
+
+def test_startup_keeps_the_work_folder_shared_with_the_tool_group(tmp_path, monkeypatch):
+    """Found in the in-container check (2026-10-02): the server's startup
+    chmod'ed the work folder to 0700 after the entrypoint had shared it, which
+    also zeroes the ACL mask, so the tool user couldn't write there."""
+    app_initializer, workspace = _startup_dirs(tmp_path, monkeypatch)
+    monkeypatch.setattr(tool_user, "MARKER_FILE", str(tmp_path / "no-marker"))
+    monkeypatch.setenv("ODYSSEUS_TOOL_USER", "odytools")
+    monkeypatch.setenv("ODYSSEUS_TOOL_GROUP", "odyshare")
+    app_initializer.create_directories()
+    assert stat.S_IMODE(os.stat(workspace).st_mode) == 0o2770
+    # Without a tool user it stays private to the app, as before.
+    monkeypatch.delenv("ODYSSEUS_TOOL_USER")
+    monkeypatch.delenv("ODYSSEUS_TOOL_GROUP")
+    app_initializer.create_directories()
+    assert stat.S_IMODE(os.stat(workspace).st_mode) == 0o700
