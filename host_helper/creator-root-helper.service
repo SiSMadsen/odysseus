@@ -1,7 +1,8 @@
-# Creator root helper (docs/creator-plan.md, Phases 5b and 5c).
+# Creator root helper (docs/creator-plan.md, Phases 5b, 5c and 5d).
 # Install: see host_helper/README.md ("The root helper"). Kill switch:
-# `sudo systemctl stop creator-root-helper` (root is off at once; a restart
-# also starts with root off).
+# `sudo systemctl stop creator-root-helper` (root is off at once, and a root
+# command still running is stopped with it; a restart also starts with root
+# off).
 [Unit]
 Description=Odysseus Creator root helper (the root switch)
 After=local-fs.target
@@ -25,9 +26,10 @@ RuntimeDirectoryMode=0700
 Restart=on-failure
 RestartSec=5
 
-# Hardening. In 5b and 5c the helper only switches and judges: it runs no
-# commands, so it is locked down as far as it goes. 5d (root commands)
-# loosens this on purpose.
+# Hardening. The helper itself only switches, judges and asks systemd (as
+# root, over systemd's own socket) to start each root command in its own
+# short-lived unit (systemd-run), with that unit's own walls (5d). The
+# commands are not its children, so none of this has to be loosened for them.
 # - No capabilities at all: as the owner of its own files it needs none.
 # - No network: it listens only on its two Unix sockets.
 # - Writable: only its socket folder and the directories above. /etc (the

@@ -211,6 +211,15 @@ _register(
     result_integrity=ResultIntegrity.EXTERNAL_UNTRUSTED,
 )
 _register(
+    # Creator mode: a command on the HOST as root, through the root helper,
+    # which judges it first (Phase 5d). Same effects as host_exec, as root.
+    {"run_as_root"},
+    ToolEffect.EXECUTE_CODE,
+    ToolEffect.ADMIN_CHANGE,
+    ToolEffect.NETWORK_EGRESS,
+    result_integrity=ResultIntegrity.EXTERNAL_UNTRUSTED,
+)
+_register(
     {"download_attachment"},
     ToolEffect.READ_PRIVATE,
     ToolEffect.WRITE_WORKSPACE,

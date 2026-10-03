@@ -18,11 +18,13 @@ export const STATUS_LABELS = {
 export const ACTIVE_STATUSES = ['running', 'paused'];
 
 export const HOST_TOOL = 'host_exec';
+export const ROOT_TOOL = 'run_as_root';
 
-/** The command as you'd type it: host_exec's JSON args become the bare command. */
+/** The command as you'd type it: host_exec's and run_as_root's JSON args
+ * become the bare command. */
 export function displayCommand(tool, command) {
   const text = command == null ? '' : String(command);
-  if (tool !== HOST_TOOL) return text;
+  if (tool !== HOST_TOOL && tool !== ROOT_TOOL) return text;
   try {
     const args = JSON.parse(text);
     if (args && typeof args.command === 'string') return args.command;
@@ -87,7 +89,7 @@ export function buildTimeline(events) {
         const it = {
           kind: 'command', tool: ev.tool || 'tool', command: ev.command || '',
           output: '', exitCode: null, approved: !!ev.approved, done: false,
-          host: ev.tool === HOST_TOOL,
+          host: ev.tool === HOST_TOOL, root: ev.tool === ROOT_TOOL,
         };
         items.push(it);
         open.push(it);
@@ -97,7 +99,7 @@ export function buildTimeline(events) {
         let it = takeOpen(ev.tool || 'tool', ev.command || '');
         if (!it) {
           it = { kind: 'command', tool: ev.tool || 'tool', command: ev.command || '', approved: false,
-                 host: ev.tool === HOST_TOOL };
+                 host: ev.tool === HOST_TOOL, root: ev.tool === ROOT_TOOL };
           items.push(it);
         }
         it.output = ev.output == null ? '' : String(ev.output);
@@ -247,6 +249,22 @@ const HOST_CHOICE_HINTS = {
   deny: "Don't run it. Creator is told to find another way.",
 };
 
+// A root command (Phase 5d: pause.scope === 'root'): one at a time, never
+// "for this job". The pause's question says whether root is off or the
+// watchdog wants your approval.
+const ROOT_CHOICE_LABELS = {
+  approve_once: 'Run as root once',
+  deny: 'Deny',
+};
+
+const ROOT_CHOICE_HINTS = {
+  approve_once: 'Run this one command on the host as root. If root is off, switch it on in the header first.',
+  deny: "Don't run it. Three root commands denied in a row switch root off.",
+};
+
+export const ROOT_NOTICE = 'This command runs on the host machine as root. Root commands are approved one at '
+  + 'a time; if root is off, switch it on in the header (Root: off), then approve.';
+
 /**
  * What the reply bar offers for a pause (the `pause` object from /status).
  *   approval:          {mode: 'approval', buttons: [{label, hint, decision, tone}], placeholder, notice}
@@ -262,19 +280,23 @@ export function replyControls(pause) {
     return {
       mode: 'approval',
       buttons: choices.filter(c => CHOICE_LABELS[c]).map(c => ({
-        label: (pause.scope === 'host' ? HOST_CHOICE_LABELS : CHOICE_LABELS)[c],
-        hint: (pause.scope === 'host' ? HOST_CHOICE_HINTS : CHOICE_HINTS)[c],
+        label: (pause.scope === 'root' ? ROOT_CHOICE_LABELS
+          : pause.scope === 'host' ? HOST_CHOICE_LABELS : CHOICE_LABELS)[c] || CHOICE_LABELS[c],
+        hint: (pause.scope === 'root' ? ROOT_CHOICE_HINTS
+          : pause.scope === 'host' ? HOST_CHOICE_HINTS : CHOICE_HINTS)[c] || CHOICE_HINTS[c],
         decision: c,
         tone: c === 'deny' ? 'deny' : 'approve',
       })),
       placeholder: 'Optional note for Creator, sent with your choice',
       notice: pause.protected
         ? 'This touches a protected path, so it can only be approved one action at a time.'
-        : pause.scope === 'host'
-          ? 'This command runs on the host machine, outside the container, as the user creator.'
-          : pause.scope === 'untrusted'
-            ? UNTRUSTED_NOTICE
-            : '',
+        : pause.scope === 'root'
+          ? ROOT_NOTICE
+          : pause.scope === 'host'
+            ? 'This command runs on the host machine, outside the container, as the user creator.'
+            : pause.scope === 'untrusted'
+              ? UNTRUSTED_NOTICE
+              : '',
     };
   }
   const options = (Array.isArray(pause.options) ? pause.options : [])

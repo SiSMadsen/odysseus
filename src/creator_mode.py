@@ -37,6 +37,7 @@ from src.creator_safety import (
     kill_job_shell,
     make_protected_action_check,
 )
+from src.creator_root_helper import RUN_AS_ROOT_TOOL, parse_run_as_root_args
 from src.creator_secrets import SecretStore, secret_store_tripwire_paths
 
 logger = logging.getLogger(__name__)
@@ -178,6 +179,36 @@ PROGRESS line.
 - `creator` can only do what it has been allowed on the host. A "Permission \
 denied" there is a limit, not a puzzle: don't look for ways around it. Say \
 what access is missing in the report.
+"""
+
+
+# Phase 5d: commands on the host as root, through the root helper, which
+# judges each one (the watchdog) before it runs.
+ROOT_OFF_REASON = ("Root is off. Switch it on in the header (Root: off), then Approve once to run this "
+                   "root command. The watchdog says: {verdict}")
+ROOT_APPROVAL_REASON = "Root command: it runs on the host as root, and the watchdog says it needs your approval ({why})."
+ROOT_TIER_LABELS = {"automatic": "automatic", "approval": "needs your approval", "refused": "refused"}
+CREATOR_ROOT_PROMPT = """
+Root on the host:
+- `run_as_root` with {"command": "..."} runs one command on the host as \
+root, through the root helper. Use it only for what needs root (installing \
+packages, changing permissions or owners, system config); use `host_exec` \
+for everything else.
+- The helper's watchdog judges every command. Plain `apt-get update`, \
+`apt-get upgrade`, `apt-get install <package names>` and `chmod` / `chown` \
+on paths inside the allowed folders (by default /var/www and /srv) run \
+straight away. Write them exactly like that: one command, no pipes, no \
+`;` or `&&`, no quotes, no `sudo`, no `VAR=` prefix. There's no stdin, so \
+add `-y` to `apt-get install` and `apt-get upgrade`. Anything else waits for \
+the user's approval, one command at a time, so keep those few and \
+purposeful, and explain each in a PROGRESS line first.
+- Refused, and root switches off at once: anything that touches the helpers, \
+their files or services, sudoers, accounts and passwords, SSH keys or \
+config, the Docker socket or the Odysseus folder. Never try to get around \
+the watchdog (not with scripts, encodings or other tools); if the task needs \
+something it refuses, say so in the report.
+- Root has to be switched on by the user. If it's off, the job pauses and \
+asks them; you don't need to ask separately.
 """
 
 
@@ -435,9 +466,14 @@ _STATUS_LABELS = {
 }
 
 
+_ROOT_REPORT_MARKS = {"automatic": "automatic", "approved": "approved by you",
+                      "refused": "refused by the watchdog", "not_run": "not run"}
+
+
 def _display_command(tool, command) -> str:
-    """host_exec's JSON arguments shown as the bare command, as in the window."""
-    if tool == HOST_EXEC_TOOL and isinstance(command, str) and command.lstrip().startswith("{"):
+    """host_exec's and run_as_root's JSON arguments shown as the bare command,
+    as in the window."""
+    if tool in (HOST_EXEC_TOOL, RUN_AS_ROOT_TOOL) and isinstance(command, str) and command.lstrip().startswith("{"):
         try:
             args = json.loads(command)
         except ValueError:
@@ -457,7 +493,9 @@ def render_report(data: dict) -> str:
     for c in commands:
         code = c.get("exit_code")
         mark = "ok" if c.get("ok") else f"failed, exit {code}" if code is not None else "failed"
-        approved = (" (approved by you)" if c.get("approved")
+        root = c.get("root")
+        approved = (f" (as root: {_ROOT_REPORT_MARKS.get(root, root)})" if root
+                    else " (approved by you)" if c.get("approved")
                     else " (allowed: all host commands)" if c.get("allowed_all") else "")
         cmd_lines.append(f"{c.get('n')}. [{c.get('tool')}] `{_display_command(c.get('tool'), c.get('command'))}`"
                          f" — {mark}{approved}")
@@ -509,12 +547,16 @@ class CreatorManager:
         secret_store: Optional[SecretStore] = None,
         tool_executor: Optional[Callable] = None,
         host_helper=None,
+        root_helper=None,
     ):
         global _active_manager
         self._session_factory = session_factory
         self._agent_loop = agent_loop
         # Module-like object with async hello() and run() (src/creator_host_helper).
         self._host_helper = host_helper
+        # Module-like object with async hello()/run()/denied() and
+        # check_sync() (src/creator_root_helper).
+        self._root_helper = root_helper
         self._audit_directory = audit_directory
         self._tool_executor = tool_executor
         self.secrets = secret_store or SecretStore(session_factory)
@@ -695,6 +737,7 @@ class CreatorManager:
         approve_untrusted: bool = False,
         approve_host: bool = False,
         follow_up: Optional[dict] = None,
+        allow_root: bool = False,
     ) -> str:
         """`approve_untrusted` is "approve_job" given up front: the untrusted-
         content gate is lifted for the whole run, so it doesn't pause at its
@@ -704,7 +747,10 @@ class CreatorManager:
         gate from the untrusted one (6b decision 2), so it's a separate choice;
         protected paths still ask.
         `follow_up` is an earlier finished job of the same owner (get_job's
-        dict): the new job is given its task and report before its own task."""
+        dict): the new job is given its task and report before its own task.
+        `allow_root`: the owner may use root (a logged-in admin in a browser
+        session, as for the root routes); only then is run_as_root offered,
+        and only if the root helper answers."""
         # One job at a time; a paused job still holds its task, so it counts.
         # No await between this check and registering the task below.
         if self.running_job_id() is not None:
@@ -748,6 +794,7 @@ class CreatorManager:
             "approve_untrusted": bool(approve_untrusted),
             "approve_host": bool(approve_host),
             "follow_up_of": (follow_up or {}).get("id"),
+            "allow_root": bool(allow_root),
         })
         from datetime import timedelta
         self._live[job_id] = {
@@ -771,6 +818,10 @@ class CreatorManager:
             "follow_up_task": (follow_up or {}).get("task") or "",
             # Phase 6b: set at job start when the host helper answers.
             "host_available": False, "host_all_approved": bool(approve_host),
+            # Phase 5d: set at job start when the owner may use root and the
+            # root helper answers. root_approved: the one root command you
+            # just approved, handed to run_as_root once.
+            "allow_root": bool(allow_root), "root_available": False, "root_approved": None,
         }
         live = self._live[job_id]
 
@@ -782,6 +833,8 @@ class CreatorManager:
                 return reason
             if tool_name == HOST_EXEC_TOOL and not live["host_all_approved"]:
                 return HOST_GATE_REASON
+            if tool_name == RUN_AS_ROOT_TOOL and live["root_available"]:
+                return self._root_gate(content)
             return None
 
         live["protected_check"] = gate
@@ -824,6 +877,81 @@ class CreatorManager:
             return {"error": f"Host helper refused: {reply.get('error') or 'no reason given'}", "exit_code": 1}
         return format_run_result(reply)
 
+    def _root_gate(self, content) -> Optional[str]:
+        """Whether a run_as_root call pauses: when root is off (you switch it
+        on, then approve), or when the watchdog says it needs approval.
+        Automatic and refused commands go straight to the helper, which
+        judges again (a refused one never runs and switches root off).
+        Synchronous, like the gate: the helper answers in milliseconds."""
+        try:
+            command = parse_run_as_root_args(content)
+        except ValueError:
+            return None   # the tool itself says what's wrong
+        helper = self._root_helper
+        if helper is None:
+            from src import creator_root_helper as helper
+        from src.creator_host_helper import HelperError
+        try:
+            verdict = helper.check_sync(command)
+        except HelperError:
+            return None   # the run fails and says why
+        if not verdict.get("ok"):
+            return None
+        tier = verdict.get("tier")
+        if tier == "refused":
+            return None
+        if not verdict.get("root_on"):
+            return ROOT_OFF_REASON.format(
+                verdict=f"{ROOT_TIER_LABELS.get(tier, tier)}: {verdict.get('reason') or ''}".strip())
+        if tier == "approval":
+            return ROOT_APPROVAL_REASON.format(why=verdict.get("reason") or "not an automatic form")
+        return None
+
+    async def run_as_root(self, job_id: Optional[str], owner: Optional[str], command: str) -> dict:
+        """run_as_root's entry point. The run asking must be an active Creator
+        job of the same owner with root available. `approved` goes to the
+        helper only when this exact command is the one you just approved; the
+        helper judges it again either way."""
+        live = self._live.get(job_id or "") if is_valid_job_id(job_id or "") else None
+        if (live is None or not self.is_running(job_id)
+                or live.get("owner", "") != (owner or "")):
+            return {"error": "run_as_root only works inside a running Creator job.", "exit_code": 1}
+        if not live.get("root_available"):
+            return {"error": "The root helper isn't connected for this job (or root isn't allowed for you), "
+                             "so run_as_root isn't available. Say so in the report.", "exit_code": 1}
+        approved = live.get("root_approved") == command
+        live["root_approved"] = None
+        helper = self._root_helper
+        if helper is None:
+            from src import creator_root_helper as helper
+        from src.creator_host_helper import HelperError
+        from src.creator_root_helper import format_root_result
+        redactor = live["redactor"]
+        try:
+            reply = await helper.run(command, approved=approved, redact=redactor.known_values())
+        except HelperError as e:
+            return {"error": f"Root helper: {e}", "exit_code": 1, "root": "not_run"}
+        live["audit"].write({
+            "at": _now_iso(), "type": "root_verdict", "command": command, "tier": reply.get("tier"),
+            "approved": approved, "ran": bool(reply.get("ok")), "reason": reply.get("reason"),
+            "why": reply.get("verdict_reason"), "exit_code": reply.get("exit_code"),
+            "root_switched_off": bool(reply.get("root_switched_off")),
+        })
+        if reply.get("ok"):
+            return format_root_result(reply)
+        why = reply.get("reason")
+        error = reply.get("error") or "no reason given"
+        if why == "refused":
+            note = live.get("add_note")
+            if note:
+                note(f"Root command refused by the watchdog ({reply.get('refused_by')})"
+                     + ("; root has been switched off." if reply.get("root_switched_off") else "."), "auto")
+            return {"error": f"{error} Don't try to get around the watchdog; say in the report what "
+                             "was needed and why.", "exit_code": 1, "root": "refused"}
+        if why == "root_off":
+            error += " Try the command again: the job then pauses and asks the user to switch root on."
+        return {"error": f"Root helper: {error}", "exit_code": 1, "root": "not_run"}
+
     def request_secret(self, job_id: Optional[str], owner: Optional[str], name: str) -> dict:
         """get_secret's entry point. The run asking must be an active Creator
         job of the same owner; then SecretStore checks the switch. An allowed
@@ -861,14 +989,16 @@ class CreatorManager:
         return True
 
     def resume_job(self, job_id: str, decision: Optional[str] = None,
-                   answer: Optional[str] = None) -> dict:
+                   answer: Optional[str] = None, interactive: bool = True) -> dict:
         """Answer a paused job and let it continue.
 
         Approval pauses take `decision`: "approve_once" (run this one
         action), "approve_job" (run it, and stop asking at the untrusted-
         content gate for the rest of this job — not offered for protected
         paths) or "deny". Question / blocked pauses take `answer` (free text;
-        empty means "no answer, carry on as best you can")."""
+        empty means "no answer, carry on as best you can"). A root command
+        can only be approved `interactive`ly (in the browser, not with an API
+        token); denying it works either way."""
         live = self._live.get(job_id)
         if not self.is_running(job_id) or live is None or not live.get("pause"):
             raise CreatorNotPausedError("This job is not paused.")
@@ -877,6 +1007,8 @@ class CreatorManager:
             if decision not in pause["choices"]:
                 raise CreatorResumeError(
                     f"Choose one of: {', '.join(pause['choices'])}.")
+            if pause.get("scope") == "root" and decision != "deny" and not interactive:
+                raise CreatorResumeError("A root command can only be approved in the browser, not with an API token.")
             payload = {"decision": decision, "answer": (answer or "").strip()}
         else:
             if decision not in (None, ""):
@@ -940,6 +1072,9 @@ class CreatorManager:
             add_event({"type": "note", "text": text, "source": source})
             audit.write({"at": note["at"], "type": "note", "text": text, "source": source})
 
+        # run_as_root (a manager method, outside this run) notes refusals too.
+        live["add_note"] = add_note
+
         def record_command(tool: str, content: Any, result: dict, approved: bool = False) -> None:
             """Exact command log, failure tracking and taint, for every tool
             call the run makes (inside the loop or approved by the user)."""
@@ -956,6 +1091,8 @@ class CreatorManager:
                 "exit_code": result.get("exit_code"), "ok": ok,
                 "blocked": bool(result.get("blocked")),
             }
+            if tool == RUN_AS_ROOT_TOOL:
+                entry["root"] = result.get("root") or "not_run"
             if approved:
                 entry["approved"] = True
             elif tool == HOST_EXEC_TOOL and live["host_all_approved"] and not entry["blocked"]:
@@ -1028,10 +1165,13 @@ class CreatorManager:
             tools = set(CREATOR_CORE_TOOLS) | live["loaded_tools"]
             if live["host_available"]:
                 tools.add(HOST_EXEC_TOOL)
+            if live["root_available"]:
+                tools.add(RUN_AS_ROOT_TOOL)
             return tools
 
         def system_prompt() -> str:
-            return CREATOR_SYSTEM_PROMPT + (CREATOR_HOST_PROMPT if live["host_available"] else "")
+            return (CREATOR_SYSTEM_PROMPT + (CREATOR_HOST_PROMPT if live["host_available"] else "")
+                    + (CREATOR_ROOT_PROMPT if live["root_available"] else ""))
 
         async def probe_host() -> None:
             """Offer host_exec only when the host helper answers and can run."""
@@ -1048,6 +1188,39 @@ class CreatorManager:
                 add_note(f"Host helper connected (runs as {reply.get('user')}); host_exec is available.", "auto")
             audit.write({"at": _now_iso(), "type": "host_probe", "ok": bool(live["host_available"]),
                          "error": None if live["host_available"] else res.get("error")})
+
+        async def probe_root() -> None:
+            """Offer run_as_root only to an owner who may use root, and only
+            when the root helper answers and runs commands."""
+            if not live["allow_root"]:
+                return
+            helper = self._root_helper
+            if helper is None:
+                from src import creator_root_helper as helper
+            try:
+                reply = await helper.ask({"type": "hello"})
+            except Exception as e:   # never let the probe break a job
+                reply = {"ok": False, "error": str(e)}
+            if reply.get("ok") and reply.get("runs_commands") and "run" in (reply.get("capabilities") or []):
+                live["root_available"] = True
+                if reply.get("on"):
+                    state = f"root is on ({max(1, (reply.get('remaining_s') or 0) // 60)} min left)"
+                else:
+                    state = "root is off: a root command pauses until you switch it on"
+                add_note(f"Root helper connected; run_as_root is available ({state}).", "auto")
+            audit.write({"at": _now_iso(), "type": "root_probe", "ok": bool(live["root_available"]),
+                         "error": None if live["root_available"] else reply.get("error")})
+
+        async def root_denied(command: str) -> bool:
+            """Tells the helper; True when that switched root off (3 in a row)."""
+            helper = self._root_helper
+            if helper is None:
+                from src import creator_root_helper as helper
+            try:
+                reply = await helper.denied(command)
+            except Exception:
+                return False
+            return bool(reply.get("root_switched_off"))
 
         async def run_segment(messages: List[dict]) -> dict:
             """One agent-loop call. Returns how it ended:
@@ -1089,7 +1262,10 @@ class CreatorManager:
                 disabled_tools=disabled_tools,
                 workload="background",
                 protected_action_check=live["protected_check"],
-                caller_approved_check=lambda t, c: t == HOST_EXEC_TOOL and live["host_all_approved"],
+                # run_as_root has its own gate (root off, or the watchdog's
+                # approval tier); what passes it isn't asked about again.
+                caller_approved_check=lambda t, c: ((t == HOST_EXEC_TOOL and live["host_all_approved"])
+                                                    or t == RUN_AS_ROOT_TOOL),
                 # Never in Creator: the teacher's nested run would run tools
                 # without this job's protected paths, scrubbing, failure rule
                 # and host gate (found in the first host run, 2026-10-02).
@@ -1187,6 +1363,7 @@ class CreatorManager:
                         # protected path (one action at a time), the host-command
                         # gate for host_exec, else the untrusted-content gate.
                         scope = ("protected" if protected
+                                 else "root" if tool == RUN_AS_ROOT_TOOL
                                  else "host" if tool == HOST_EXEC_TOOL else "untrusted")
                         ending = {"end": "approval", "pause": {
                             "kind": "approval",
@@ -1194,7 +1371,9 @@ class CreatorManager:
                             "action": {"tool": tool, "command": content},
                             "protected": protected,
                             "scope": scope,
-                            "choices": ["approve_once", "deny"] if protected else list(APPROVAL_DECISIONS),
+                            # Root: one command at a time, never "for this job".
+                            "choices": (["approve_once", "deny"] if protected or scope == "root"
+                                        else list(APPROVAL_DECISIONS)),
                         }}
                     else:
                         options = [
@@ -1263,6 +1442,11 @@ class CreatorManager:
             else:
                 from collections import namedtuple
                 ToolBlock = namedtuple("ToolBlock", ["tool_type", "content"])
+            if tool == RUN_AS_ROOT_TOOL:
+                try:
+                    live["root_approved"] = parse_run_as_root_args(content)
+                except ValueError:
+                    live["root_approved"] = None
             add_event({"type": "tool_start", "tool": tool, "command": _truncate(content), "approved": True})
             audit.write({"at": _now_iso(), "type": "tool_start", "tool": tool, "command": content,
                          "approved": True})
@@ -1281,6 +1465,8 @@ class CreatorManager:
                 raise
             except Exception as e:
                 result = {"error": f"Approved action failed to run: {e}", "exit_code": 1}
+            finally:
+                live["root_approved"] = None
             raw = result if isinstance(result, dict) else {"output": str(result)}
             # Everything stored gets the known secret values blanked.
             result = redactor.known_obj(raw)
@@ -1346,6 +1532,7 @@ class CreatorManager:
                          + ", ".join(live["user_protected_paths"])
                          + ". Each action touching one asks you, every time.", "auto")
             await probe_host()
+            await probe_root()
             if live["host_available"] and live["host_all_approved"]:
                 add_note("All host commands are allowed for this job (chosen at start): "
                          "host_exec won't ask before each one.", "auto")
@@ -1383,6 +1570,10 @@ class CreatorManager:
                         reason = (f"You asked to run [{action['tool']}] `{_truncate(action['command'], 300)}`. "
                                   "The user DENIED it; it was not run. Find another way, or ask the "
                                   "user if there is none.")
+                        if request.get("scope") == "root" and await root_denied(action["command"]):
+                            add_note("Root switched off: 3 root commands were denied in a row.", "auto")
+                            reason += (" Root has now been switched off (3 root commands denied in a row). "
+                                       "Don't ask for root again in this job; report what's left.")
                     else:
                         result = await run_approved(action["tool"], action["command"])
                         host_scope = request.get("scope") == "host"

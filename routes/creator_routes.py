@@ -166,6 +166,7 @@ def setup_creator_routes(creator_manager: CreatorManager) -> APIRouter:
                 approve_untrusted=body.approve_untrusted,
                 approve_host=body.approve_host,
                 follow_up=earlier,
+                allow_root=_root_allowed(request),
             )
         except CreatorBusyError as e:
             # Don't reveal another user's job id; the owner can find their own.
@@ -229,7 +230,8 @@ def setup_creator_routes(creator_manager: CreatorManager) -> APIRouter:
         user = _require_creator_user(request)
         _owned_job(job_id, user)
         try:
-            return creator_manager.resume_job(job_id, decision=body.decision, answer=body.answer)
+            return creator_manager.resume_job(job_id, decision=body.decision, answer=body.answer,
+                                              interactive=not is_delegated_credential(request))
         except CreatorNotPausedError as e:
             raise HTTPException(409, str(e))
         except CreatorResumeError as e:
@@ -328,6 +330,15 @@ def setup_creator_routes(creator_manager: CreatorManager) -> APIRouter:
         if not admin:
             raise HTTPException(403, "Only an admin can switch root.")
         return user
+
+    def _root_allowed(request: Request) -> bool:
+        """Whether a job started by this request may be offered run_as_root:
+        the same rule as the root routes (logged-in admin, browser session)."""
+        try:
+            _require_root_user(request)
+        except HTTPException:
+            return False
+        return True
 
     def _root_unreachable(e: Exception):
         raise HTTPException(503, str(e))

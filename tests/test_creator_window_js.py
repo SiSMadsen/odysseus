@@ -52,7 +52,7 @@ def test_tool_output_joins_its_start_and_rounds_are_dropped():
     assert [i["kind"] for i in items] == ["command", "command"]
     bash, read = items
     assert bash == {"kind": "command", "tool": "bash", "command": "ls /", "output": "bin\netc",
-                    "exitCode": 0, "approved": False, "done": True, "host": False}
+                    "exitCode": 0, "approved": False, "done": True, "host": False, "root": False}
     assert read["exitCode"] == 2 and read["done"] is True
 
 
@@ -343,3 +343,31 @@ def test_allow_all_host_commands_up_front_checkbox():
     assert "id: 'creator-approve-host', type: 'checkbox'" in src
     assert "approve_host: !!byId('creator-approve-host')?.checked," in src
     assert "text: 'Allow all host commands up front'" in src
+
+
+@needs_node
+def test_root_commands_read_plainly_and_their_approval_is_once_only():
+    out = _run(textwrap.dedent(f"""
+        const v = await import('{_VIEW}');
+        const cmd = JSON.stringify({{command: 'apt-get install curl'}});
+        const items = v.buildTimeline([
+          {{type: 'tool_start', tool: 'run_as_root', command: cmd}},
+          {{type: 'tool_output', tool: 'run_as_root', command: cmd, output: 'done', exit_code: 0}},
+        ]);
+        const root = v.replyControls({{kind: 'approval', scope: 'root', protected: false,
+                                      choices: ['approve_once', 'deny']}});
+        const rootProtected = v.replyControls({{kind: 'approval', scope: 'root', protected: true,
+                                               choices: ['approve_once', 'deny']}});
+        console.log(JSON.stringify({{
+          items: items.map(i => [i.root, i.host, v.displayCommand(i.tool, i.command)]),
+          action: v.describeAction({{tool: 'run_as_root', command: cmd}}),
+          root: [root.buttons.map(b => [b.label, b.decision]), root.notice],
+          rootProtected: rootProtected.notice,
+        }}));
+    """))
+    assert out["items"] == [[True, False, "apt-get install curl"]]
+    assert out["action"] == "run_as_root: apt-get install curl"
+    labels, notice = out["root"]
+    assert labels == [["Run as root once", "approve_once"], ["Deny", "deny"]]
+    assert "as root" in notice and "Root: off" in notice
+    assert "protected path" in out["rootProtected"]

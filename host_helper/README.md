@@ -210,18 +210,17 @@ remove the `creator` user and the `COMPOSE_FILE` line.
   for polkit, but neither has run for real. `systemd-analyze security
   creator-helper` rates the unit.
 
-# The root helper (Phases 5b and 5c)
+# The root helper (Phases 5b, 5c and 5d)
 
 A second, separate helper that runs as **root** and holds the **root switch**:
 whether root is on, and until when. You switch it on from the Creator window
 with a 6-digit code from an authenticator app; it switches itself off after the
 time you chose (90 minutes at most), and **Revoke** switches it off at once.
 
-**It runs no commands yet.** It holds the switch (5b) and the **watchdog** (5c),
-which judges each root command before it may run (see "The watchdog" below).
-Running root commands comes in 5d (`run_as_root`), and will be refused while
-root is off. So you can install it now and try the switch and the watchdog
-safely.
+It holds the switch (5b), the **watchdog** (5c), which judges each root
+command before it may run (see "The watchdog" below), and it **runs root
+commands** for Creator jobs (5d, the `run_as_root` tool; see "Root commands"
+below), only while root is on.
 
 Why it is built this way (`docs/creator-plan.md`, Phase 5):
 - The code is checked **here, on the host**, against a key in a root-only file.
@@ -343,6 +342,46 @@ change with the old and new settings and whether it loosened them.
 4 above), then `sudo systemctl daemon-reload && sudo systemctl restart
 creator-root-helper` (a restart switches root off).
 
+## Root commands (5d)
+
+A Creator job gets the `run_as_root` tool when you start it as a logged-in
+admin in the browser (not with an API token) and the root helper answers.
+For each root command:
+
+- **Automatic** (see the watchdog): runs straight away, marked "root" in the
+  timeline and "(as root: automatic)" in the report. `apt-get install` and
+  `upgrade` keep your changed config files (`--force-confold`); chmod/chown
+  get the resolved paths and never follow links inside the tree.
+- **Needs your approval**: the job pauses with **Run as root once** / **Deny**.
+  There is no "for this job" for root. Three denials in a row switch root off.
+- **Refused**: never runs, and root switches off at once.
+- **Root off**: the job pauses and asks you to switch it on (Root: off in the
+  header), then **Run as root once**.
+
+The helper judges every command again when it runs it; Odysseus can't make a
+command automatic. Each command runs in its **own short-lived systemd unit**
+(`systemd-run`, named `creator-root-cmd-….service`), not as a child of the
+helper, with these walls:
+
+- unreachable: the helpers' keys, state, logs and sockets
+  (`/etc/creator-root`, `/var/lib/creator-root`, `/var/log/creator-root`,
+  `/run/creator-root`, `/srv/creator-root`, `/srv/creator-helper`,
+  `/var/log/creator-helper`), the Docker socket, and the Odysseus folder;
+- read-only: `/opt/creator-root`, `/opt/creator-helper`, both helpers' unit
+  files, and the polkit rule;
+- no `CAP_SYS_ADMIN`, `CAP_SYS_MODULE` or `CAP_SYS_PTRACE` (mounting, kernel
+  modules, reaching into other processes): each would undo the walls. A
+  command that needs one of them fails;
+- a time limit (the watchdog's "longest root command", default 900 s), and it
+  stops when the helper stops (kill switch) or when the job is stopped.
+
+Commands run with `HOME=/root`, in `/root`, with no stdin and
+`DEBIAN_FRONTEND=noninteractive`. Output is kept up to 256 KB per stream.
+The audit log has every run: the command, its verdict, whether you approved
+it, the unit, exit code, duration and the first 2 KB of output (secrets
+blanked), and every denial and switch-off with its reason. While one is
+running: `systemctl list-units 'creator-root-cmd-*'`.
+
 ## Kill switch
 
 ```sh
@@ -368,12 +407,22 @@ means the folder isn't mounted, or you're not an admin.
 
 - **uid 1000 is also you on the host.** Your own programs can ask for the
   status, revoke, and try codes (five wrong ones lock it for 15 minutes).
-  They can't switch root on without a code from your app.
-- **The unit is locked down hard** (no network, no capabilities, read-only
-  system) because the helper does nothing as root yet. 5d loosens it on
+  They can't switch root on without a code from your app. **But while root is
+  on, anything running as uid 1000 (your programs on the host, and the
+  Odysseus server in the container) can send root commands, including ones
+  marked approved.** The agent's own commands can't (they run as uid 1001
+  since 5a, and the helper refuses them). That is what the code, the time
+  window and Revoke are for: keep root on only while you need it.
+- **The helper's own unit stays locked down** (no network, no capabilities,
+  read-only system): root commands run in their own units, not inside it.
+- **The walls are walls for the files they name, not for root.** An approved
+  command can still do anything else root can (stop services, change users
+  through other means, edit other system files). The refused list is a
+  tripwire on the text; approval of everything unusual is the real protection. 5d loosens it on
   purpose, when it runs commands.
-- **Not verified on the real system:** the unit under systemd as root, the ACL
-  through the read-only bind mount, and a code from a real authenticator app.
+- **Not verified on the real system yet:** `systemd-run` from inside the
+  helper's locked-down unit, and the walls on a real root command (the tests
+  use a stand-in for systemd-run).
   The code check passes the RFC 6238 test values, and the unit passes
   `systemd-analyze verify`.
 - **Automatic apt installs are root-equivalent**: package scripts run as root,

@@ -642,7 +642,8 @@ async function _handleStop() {
 //
 // Admins only, and only when the root helper's folder is mounted. The root
 // helper on the host holds the switch and checks the authenticator code; this
-// only shows it and passes requests on. Nothing runs as root yet (5d).
+// only shows it and passes requests on. While it's on, a job's run_as_root
+// commands run as the watchdog allows (5d).
 
 const ROOT_POLL_MS = 15000;
 let _root = null;   // { status, until, poll, clock, formOpen, choice, busy, message, panelKey }
@@ -789,7 +790,7 @@ function _rootRenderPanel(panel, st) {
     go.addEventListener('click', _rootEnable);
     children.push(
       make('div', { class: 'creator-root-row' }, [code, durations, go]),
-      make('div', { class: 'creator-root-note', text: `Root switches itself off when the time is up (at most ${max} min). Revoke switches it off at once. Nothing runs as root yet: root commands come in a later step.` }),
+      make('div', { class: 'creator-root-note', text: `Root switches itself off when the time is up (at most ${max} min). Revoke switches it off at once. While it's on, a job's root commands run as the watchdog allows: automatic ones straight away, the rest after you approve each.` }),
     );
   }
   if (_root.message) children.push(make('div', { class: 'creator-root-note error', role: 'alert', text: _root.message }));
@@ -1176,6 +1177,7 @@ function _renderItem(item) {
       const summary = make('summary', {}, [
         make('span', { class: 'creator-cmd-tool', text: item.tool }),
         item.host ? make('span', { class: 'creator-chip host', text: 'host', title: 'Ran on the host machine as creator' }) : null,
+        item.root ? make('span', { class: 'creator-chip host root', text: 'root', title: 'Ran on the host machine as root, through the root helper' }) : null,
         make('code', { class: 'creator-cmd-text', text: view.displayCommand(item.tool, item.command) || '(no command text)' }),
         item.approved ? make('span', { class: 'creator-chip approved', text: 'approved' }) : null,
         make('span', { class: `creator-chip exit ${exitCls}`, text: exitText }),

@@ -71,6 +71,7 @@ _COMMON_TOOL_NAMES = {
     "generate_image",
     "get_secret",
     "host_exec",
+    "run_as_root",
     "load_tools",
     "glob",
     "grep",

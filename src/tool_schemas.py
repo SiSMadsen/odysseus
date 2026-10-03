@@ -1107,6 +1107,20 @@ FUNCTION_TOOL_SCHEMAS = [
     {
         "type": "function",
         "function": {
+            "name": "run_as_root",
+            "description": "Creator mode only: run one command on the HOST machine as root, through the root helper. Its watchdog judges each command first: plain `apt-get update|upgrade|install <packages>` and `chmod`/`chown` inside the allowed folders run straight away; anything else waits for the user's approval; commands touching the helpers, sudo, accounts or SSH are refused and switch root off. Root must be switched on by the user. No stdin. Returns output and exit code.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "command": {"type": "string", "description": "The command (run without a shell when it is an automatic form, else with bash -c)"},
+                },
+                "required": ["command"]
+            }
+        }
+    },
+    {
+        "type": "function",
+        "function": {
             "name": "resolve_contact",
             "description": "Look up a contact by name. Searches CardDAV address book and sent email history. Returns email addresses (when available) or phone numbers. Use when the user says 'message [name]', 'email [name]', or asks for someone's contact details.",
             "parameters": {
