@@ -272,7 +272,8 @@ def test_hello_status_enable_revoke_over_the_socket(in_tmp):
     async def go():
         hello = await _raw(SOCK, {"type": "hello"})
         assert hello["ok"] and hello["helper"] == "creator-root-helper"
-        assert hello["capabilities"] == ["hello", "status", "enable", "revoke"]
+        assert hello["capabilities"] == ["hello", "status", "enable", "revoke", "check", "watchdog",
+                                         "watchdog_save"]
         assert hello["runs_commands"] is False and hello["on"] is False
         assert (await _raw(SOCK, {"type": "run", "command": "id"}))["ok"] is False
         on = await _raw(SOCK, {"type": "enable", "code": code, "minutes": 20})

@@ -264,6 +264,187 @@ async function saveLimits() {
   }
 }
 
+// Root watchdog (Phase 5c): the root helper's settings and its "Test a
+// command". The helper keeps the settings and decides whether a change
+// loosens them; then the save comes back 428 and asks for an authenticator
+// code. Shown only to admins, and only when the root helper is mounted.
+const WATCHDOG_API = '/api/creator/root/watchdog';
+
+export function linesOf(text) {
+  return (text || '').split('\n').map(l => l.trim()).filter(Boolean);
+}
+
+// The settings to send, from the form's values. Returns { error } when the
+// time limit isn't a whole number in range (the helper checks the rest).
+export function watchdogSettingsFromForm({ automatic, folders, extra, maxSeconds }, limits = {}) {
+  const lo = limits.min_command_s || 10;
+  const hi = limits.max_command_s || 3600;
+  const raw = String(maxSeconds ?? '').trim();
+  const secs = /^\d+$/.test(raw) ? parseInt(raw, 10) : NaN;
+  if (!Number.isFinite(secs) || secs < lo || secs > hi) {
+    return { error: `Longest root command must be ${lo}–${hi} seconds.` };
+  }
+  return {
+    settings: {
+      automatic: { ...automatic },
+      allowed_folders: linesOf(folders),
+      extra_refused: linesOf(extra),
+      max_command_s: secs,
+    },
+  };
+}
+
+const TIER_LABELS = { automatic: 'Automatic', approval: 'Needs your approval', refused: 'Refused' };
+
+export function verdictText(v) {
+  if (!v || !v.tier) return '';
+  let text = `${TIER_LABELS[v.tier] || v.tier}: ${v.reason || ''}`.trim();
+  if (v.tier === 'refused') text += ' When a job sends it, root switches off at once.';
+  if (v.problem) text += ` (Note: ${v.problem})`;
+  return text;
+}
+
+let _watchdog = null;   // the last GET: settings, forms, limits, built-in list
+
+function setWatchdogMessage(text, isError) {
+  const msg = byId('watchdog-msg');
+  if (!msg) return;
+  msg.textContent = text || '';
+  msg.className = text ? (isError ? 'admin-error' : 'admin-success') : '';
+}
+
+function showWatchdogCode(show) {
+  const wrap = byId('watchdog-code-wrap');
+  if (wrap) wrap.hidden = !show;
+  const code = byId('watchdog-code');
+  if (code && !show) code.value = '';
+  if (code && show) code.focus();
+}
+
+function renderWatchdog(data) {
+  _watchdog = data;
+  const s = data.settings || {};
+  const problem = byId('watchdog-problem');
+  if (problem) {
+    problem.hidden = !data.problem;
+    problem.textContent = data.problem || '';
+  }
+  const forms = byId('watchdog-forms');
+  if (forms) {
+    forms.replaceChildren();
+    Object.entries(data.forms || {}).forEach(([key, label]) => {
+      const box = make('input', { type: 'checkbox', 'data-form': key });
+      box.checked = !!(s.automatic || {})[key];
+      forms.appendChild(make('label', { style: 'display:flex;gap:6px;align-items:center;' },
+        [box, make('span', { text: `Automatic: ${label}` })]));
+    });
+  }
+  byId('watchdog-folders').value = (s.allowed_folders || []).join('\n');
+  byId('watchdog-extra').value = (s.extra_refused || []).join('\n');
+  byId('watchdog-max-s').value = s.max_command_s || '';
+  const limits = data.limits || {};
+  byId('watchdog-max-s').min = limits.min_command_s || 10;
+  byId('watchdog-max-s').max = limits.max_command_s || 3600;
+  const b = data.builtin_refused || {};
+  byId('watchdog-builtin').textContent = [
+    `Paths: ${(b.paths || []).join(', ')}`,
+    `Anywhere in a command: ${(b.anywhere || []).join(', ')}`,
+    `Tools: ${(b.tools || []).join(', ')}`,
+  ].join('\n');
+  byId('watchdog-builtin').style.whiteSpace = 'pre-wrap';
+}
+
+async function loadWatchdog() {
+  const wrap = byId('root-watchdog-wrap');
+  if (!wrap) return;
+  wrap.hidden = true;
+  if (!window._isAdmin) return;
+  let st;
+  try {
+    st = await api('/api/creator/root/status');
+  } catch (_) {
+    return;   // not allowed (no admin session): no card
+  }
+  if (!st.installed) return;
+  wrap.hidden = false;
+  showWatchdogCode(false);
+  setWatchdogMessage('');
+  try {
+    renderWatchdog(await api(WATCHDOG_API));
+  } catch (e) {
+    setWatchdogMessage(e.message, true);
+  }
+}
+
+async function saveWatchdog() {
+  const automatic = {};
+  document.querySelectorAll('#watchdog-forms input[data-form]').forEach(box => {
+    automatic[box.getAttribute('data-form')] = box.checked;
+  });
+  const built = watchdogSettingsFromForm({
+    automatic,
+    folders: byId('watchdog-folders').value,
+    extra: byId('watchdog-extra').value,
+    maxSeconds: byId('watchdog-max-s').value,
+  }, (_watchdog && _watchdog.limits) || {});
+  if (built.error) {
+    setWatchdogMessage(built.error, true);
+    return;
+  }
+  const codeWrap = byId('watchdog-code-wrap');
+  const code = codeWrap && !codeWrap.hidden ? (byId('watchdog-code').value || '').trim() : '';
+  if (codeWrap && !codeWrap.hidden && !/^\d{6}$/.test(code)) {
+    setWatchdogMessage('Type the 6-digit code from your authenticator app.', true);
+    return;
+  }
+  const btn = byId('watchdog-save');
+  if (btn) btn.disabled = true;
+  try {
+    const res = await fetch(WATCHDOG_API, {
+      method: 'POST',
+      credentials: 'same-origin',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(code ? { settings: built.settings, code } : { settings: built.settings }),
+    });
+    let data = {};
+    try { data = await res.json(); } catch (_) { /* empty body */ }
+    const detail = Array.isArray(data.detail) ? data.detail.map(d => d.msg).join('; ') : data.detail;
+    if (res.status === 428) {
+      showWatchdogCode(true);
+      setWatchdogMessage(detail, true);
+      return;
+    }
+    if (!res.ok) {
+      if (byId('watchdog-code')) byId('watchdog-code').value = '';
+      setWatchdogMessage(detail || `Request failed (${res.status})`, true);
+      return;
+    }
+    renderWatchdog(data);
+    showWatchdogCode(false);
+    setWatchdogMessage(data.loosened ? 'Saved (loosened, with your code).' : 'Saved.');
+  } catch (e) {
+    setWatchdogMessage(e.message, true);
+  } finally {
+    if (btn) btn.disabled = false;
+  }
+}
+
+async function testWatchdog() {
+  const out = byId('watchdog-test-result');
+  const command = (byId('watchdog-test-input')?.value || '').trim();
+  if (!out || !command) return;
+  out.className = '';
+  out.textContent = 'Checking…';
+  try {
+    const v = await api('/api/creator/root/check', { method: 'POST', body: JSON.stringify({ command }) });
+    out.className = v.tier === 'automatic' ? 'admin-success' : (v.tier === 'refused' ? 'admin-error' : '');
+    out.textContent = verdictText(v);
+  } catch (e) {
+    out.className = 'admin-error';
+    out.textContent = e.message;
+  }
+}
+
 let _bound = false;
 function init() {
   if (!_bound) {
@@ -273,12 +454,19 @@ function init() {
     if (test) test.addEventListener('click', testHelper);
     const saveBtn = byId('creator-limits-save');
     if (saveBtn) saveBtn.addEventListener('click', saveLimits);
+    const wdSave = byId('watchdog-save');
+    if (wdSave) wdSave.addEventListener('click', saveWatchdog);
+    const wdTest = byId('watchdog-test-btn');
+    if (wdTest) wdTest.addEventListener('click', testWatchdog);
+    const wdInput = byId('watchdog-test-input');
+    if (wdInput) wdInput.addEventListener('keydown', e => { if (e.key === 'Enter') testWatchdog(); });
     _bound = true;
   }
   setMessage('');
   closeForm();
   load();
   loadLimits();
+  loadWatchdog();
 }
 
 export default { init, load };

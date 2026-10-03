@@ -85,7 +85,7 @@ The largest and most central subsystem. Chat submission → backend SSE → prog
 | **`providerDeviceFlow.js`** | OAuth device-flow support for providers. |
 | **`presets.js`** | Character/preset selection, custom preset saving, inject prefix/suffix handling. |
 | **`search.js`** | Web-search settings, provider selection, API key management. |
-| **`secrets.js`** | Settings → Secrets (Creator mode): add/edit/delete secrets and their on/off switches. Values are write-only. |
+| **`secrets.js`** | Settings → Secrets (Creator mode): add/edit/delete secrets and their on/off switches (values are write-only); host helper test; Creator limits; the root watchdog card (settings and "Test a command"). |
 | **`settings.js`** | Settings panel (models, search, appearance, users, MCP, RAG, embedding, tokens). |
 | **`admin.js`** | Admin panel and privileged user/endpoint configuration. |
 | **`theme.js`** | Theme presets, custom colors, fonts, backgrounds, live theme switching. |

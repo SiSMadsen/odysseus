@@ -2095,6 +2095,38 @@
               <button type="button" class="admin-btn-add" id="creator-limits-save">Save</button>
             </div>
           </div>
+          <!-- Shown by js/secrets.js only when the root helper is mounted. -->
+          <div id="root-watchdog-wrap" hidden>
+          <div class="admin-card admin-only" id="root-watchdog-card">
+            <h2>Root watchdog</h2>
+            <div class="admin-toggle-sub" style="margin-bottom:8px">The root helper on the host judges every root command before it may run: <b>automatic</b> (one of the forms below, exactly), <b>needs your approval</b> (everything else, one command at a time), or <b>refused</b> (it names the helpers, sudo, accounts, SSH and the like; root then switches off). The helper keeps these settings. Changes that let more through need a code from your authenticator app; tightening doesn't.</div>
+            <div id="watchdog-problem" class="admin-error" style="font-size:12px;margin-bottom:6px;" hidden></div>
+            <div id="watchdog-forms" style="display:flex;flex-direction:column;gap:4px;margin-bottom:8px;font-size:12px;"></div>
+            <label for="watchdog-folders" style="font-size:12px;">Allowed folders for automatic chmod/chown (one per line; only what's inside them)</label>
+            <textarea id="watchdog-folders" rows="2" spellcheck="false" style="width:100%;box-sizing:border-box;font-family:monospace;font-size:12px;"></textarea>
+            <label for="watchdog-extra" style="font-size:12px;">Extra refused paths (one per line, on top of the built-in list)</label>
+            <textarea id="watchdog-extra" rows="2" spellcheck="false" placeholder="/etc/apache2" style="width:100%;box-sizing:border-box;font-family:monospace;font-size:12px;"></textarea>
+            <details style="font-size:12px;margin:4px 0 8px;">
+              <summary>Always refused (built in, can't be removed)</summary>
+              <div id="watchdog-builtin" style="font-family:monospace;font-size:11px;overflow-wrap:anywhere;margin-top:4px;"></div>
+            </details>
+            <div class="settings-row" style="align-items:center;gap:8px;flex-wrap:wrap;">
+              <label for="watchdog-max-s" style="font-size:12px;">Longest root command (seconds)</label>
+              <input type="number" id="watchdog-max-s" min="10" max="3600" step="1" style="width:80px;">
+              <span id="watchdog-code-wrap" hidden>
+                <input type="text" id="watchdog-code" inputmode="numeric" autocomplete="one-time-code" maxlength="6" placeholder="6-digit code" style="width:100px;">
+              </span>
+              <span id="watchdog-msg" style="font-size:11px;margin-right:auto;overflow-wrap:anywhere;"></span>
+              <button type="button" class="admin-btn-add" id="watchdog-save">Save</button>
+            </div>
+            <div style="font-size:12px;margin-top:10px;">Test a command (runs nothing, and a refusal here doesn't switch root off)</div>
+            <div class="settings-row" style="gap:8px;">
+              <input type="text" id="watchdog-test-input" spellcheck="false" placeholder="apt-get install curl" style="flex:1;font-family:monospace;font-size:12px;">
+              <button type="button" class="admin-btn-add" id="watchdog-test-btn">Check</button>
+            </div>
+            <div id="watchdog-test-result" style="font-size:12px;overflow-wrap:anywhere;"></div>
+          </div>
+          </div>
         </div>
 
         <!-- ═══ EMAIL TAB ═══ -->

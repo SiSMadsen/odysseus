@@ -1,4 +1,4 @@
-# Creator root helper (docs/creator-plan.md, Phase 5b).
+# Creator root helper (docs/creator-plan.md, Phases 5b and 5c).
 # Install: see host_helper/README.md ("The root helper"). Kill switch:
 # `sudo systemctl stop creator-root-helper` (root is off at once; a restart
 # also starts with root off).
@@ -10,9 +10,12 @@ After=local-fs.target
 Type=simple
 # Root, on purpose: the switch has to be out of reach of everything it guards.
 User=root
-ExecStart=/usr/bin/python3 /opt/creator-root/root_helper.py serve --allow-uid 1000
-# /var/lib/creator-root (the last code used), /var/log/creator-root (audit
-# log), /run/creator-root (the control socket): root only.
+# --odysseus-dir: the Odysseus folder on this host. The watchdog refuses root
+# commands that name it. Change it if yours is elsewhere.
+ExecStart=/usr/bin/python3 /opt/creator-root/root_helper.py serve --allow-uid 1000 --odysseus-dir /home/madsen/odysseus
+# /var/lib/creator-root (the last code used, the watchdog's settings),
+# /var/log/creator-root (audit log), /run/creator-root (the control socket):
+# root only.
 StateDirectory=creator-root
 StateDirectoryMode=0700
 LogsDirectory=creator-root
@@ -22,8 +25,9 @@ RuntimeDirectoryMode=0700
 Restart=on-failure
 RestartSec=5
 
-# Hardening. In 5b the helper is only a switch: it runs no commands, so it is
-# locked down as far as it goes. 5d (root commands) loosens this on purpose.
+# Hardening. In 5b and 5c the helper only switches and judges: it runs no
+# commands, so it is locked down as far as it goes. 5d (root commands)
+# loosens this on purpose.
 # - No capabilities at all: as the owner of its own files it needs none.
 # - No network: it listens only on its two Unix sockets.
 # - Writable: only its socket folder and the directories above. /etc (the

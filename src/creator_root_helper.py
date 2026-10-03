@@ -1,10 +1,11 @@
-"""Client for the Creator root helper (Phase 5b of docs/creator-plan.md).
+"""Client for the Creator root helper (Phases 5b and 5c of docs/creator-plan.md).
 
 The root helper runs on the host as root (host_helper/root_helper.py) and
 holds the root switch: whether root is on, and until when. Odysseus asks it
 for the status, passes on your authenticator code to switch root on, and asks
 it to revoke. The code is checked by the helper against a key Odysseus never
-sees. In 5b nothing runs as root yet.
+sees. It also holds the watchdog (5c), which judges each root command, and
+the watchdog's settings, which only it writes. Nothing runs as root yet (5d).
 
 The socket path is fixed (env CREATOR_ROOT_SOCKET overrides it), not an admin
 setting, like the host helper's.
@@ -77,3 +78,23 @@ async def enable(code: str, minutes: int, path: Optional[str] = None) -> dict:
 
 async def revoke(path: Optional[str] = None) -> dict:
     return await ask({"type": "revoke"}, path=path)
+
+
+async def check(command: str, path: Optional[str] = None) -> dict:
+    """The watchdog's verdict on a command: {"ok": True, "tier", "reason", ...}.
+    Runs nothing."""
+    return await ask({"type": "check", "command": command}, path=path)
+
+
+async def watchdog(path: Optional[str] = None) -> dict:
+    """The watchdog's settings, its built-in refused list and its limits."""
+    return await ask({"type": "watchdog"}, path=path)
+
+
+async def save_watchdog(settings: dict, code: Optional[str] = None, path: Optional[str] = None) -> dict:
+    """New settings. The helper decides whether they loosen the watchdog; if
+    so it wants a code ({"ok": False, "reason": "code_needed", "loosens"})."""
+    payload = {"type": "watchdog_save", "settings": settings}
+    if code:
+        payload["code"] = code
+    return await ask(payload, path=path)

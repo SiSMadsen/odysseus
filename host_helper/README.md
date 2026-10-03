@@ -210,16 +210,18 @@ remove the `creator` user and the `COMPOSE_FILE` line.
   for polkit, but neither has run for real. `systemd-analyze security
   creator-helper` rates the unit.
 
-# The root helper (Phase 5b)
+# The root helper (Phases 5b and 5c)
 
 A second, separate helper that runs as **root** and holds the **root switch**:
 whether root is on, and until when. You switch it on from the Creator window
 with a 6-digit code from an authenticator app; it switches itself off after the
 time you chose (90 minutes at most), and **Revoke** switches it off at once.
 
-**In 5b it is only the switch: it runs no commands.** Root commands come later
-(5c: the watchdog, 5d: `run_as_root`), and will be refused while root is off.
-So you can install it now and try the switch safely.
+**It runs no commands yet.** It holds the switch (5b) and the **watchdog** (5c),
+which judges each root command before it may run (see "The watchdog" below).
+Running root commands comes in 5d (`run_as_root`), and will be refused while
+root is off. So you can install it now and try the switch and the watchdog
+safely.
 
 Why it is built this way (`docs/creator-plan.md`, Phase 5):
 - The code is checked **here, on the host**, against a key in a root-only file.
@@ -247,7 +249,10 @@ sudo setfacl -m u:1000:x /srv/creator-root
 #    authenticator app; it then asks for a code to check the app is right.
 sudo python3 /opt/creator-root/root_helper.py setup-totp
 
-# 4. The service.
+# 4. The service. Its ExecStart line names the Odysseus folder
+#    (--odysseus-dir /home/madsen/odysseus): the watchdog refuses root
+#    commands that name it. Edit the copy in /etc/systemd/system if yours is
+#    elsewhere.
 sudo install -o root -g root -m 0644 host_helper/creator-root-helper.service /etc/systemd/system/
 sudo systemctl daemon-reload
 sudo systemctl enable --now creator-root-helper
@@ -290,6 +295,54 @@ The audit log: `sudo cat /var/log/creator-root/audit.jsonl`. Every connection
 (who, which request, the result), every switch on (how, for how long) and off
 (revoked or expired), and lockouts. Codes are never written, right or wrong.
 
+## The watchdog (5c)
+
+Every root command gets one of three verdicts, from the helper:
+
+- **Automatic**: it is exactly one of these forms, with no shell syntax at all
+  (no `; | & $ ` quotes, globs or redirects; letters, digits, spaces and
+  `_ . / : + , = -` only):
+  - `apt-get update`, `apt-get upgrade`, `apt-get install <package names>`
+    (options `-y` and `-q` only, plus `--no-install-recommends` for install;
+    plain package names: no `.deb` files, paths, URLs, versions or releases);
+  - `chmod [-R] <mode> <paths>` (no setuid or setgid) and
+    `chown [-R] <owner[:group]> <paths>` (an existing user or group) on paths
+    **inside** the allowed folders (default `/var/www` and `/srv`, not the
+    folders themselves), checked after resolving symlinks.
+- **Needs your approval**: everything else, one command at a time (5d). Also
+  `apt-get full-upgrade`, `remove`, `purge`, `autoremove`, and `setfacl`.
+- **Refused**: anything that names the helpers' files, sockets, config, state
+  or logs, the Creator services, `/etc/systemd/system`, `/etc/sudoers*`,
+  `/etc/shadow`, `/etc/gshadow`, `/etc/passwd`, `/etc/group`, `/etc/polkit-1`,
+  `/etc/ssh`, `/root/.ssh`, any `.ssh/` or `authorized_keys`, the Odysseus
+  folder, the Docker socket, or the tools `visudo`, `passwd`, `chpasswd`,
+  `useradd`, `usermod`, `userdel`, `adduser`, `gpasswd`. From 5d, a refused
+  command also switches root off at once. This is a tripwire on the text, not
+  a wall: a disguised command can get past it, but it can't be automatic, so it
+  still needs your approval.
+
+**Settings:** Settings > Secrets > **Root watchdog** in Odysseus (admins; shown
+when the root helper's folder is mounted): each automatic form on or off, the
+allowed folders, extra refused paths, and the longest a root command may run.
+The helper keeps them in `/var/lib/creator-root/watchdog.json` (root, 0600) and
+decides itself whether a change **loosens** the watchdog (turns a form on,
+allows a new folder, drops a refused path, raises the time limit). Loosening
+needs a code from your authenticator app (same rules as switching root on: a
+code works once, wrong codes count towards the lockout); tightening doesn't.
+The built-in refused list can't be removed. If the file is broken or anyone but
+root could change it, **nothing is automatic** until it's fixed (the card says
+so). As root you can also edit the file by hand; it is read on every request.
+
+**Test a command:** the same card has a box that shows the verdict for any
+command, without running it (a refused verdict there doesn't switch root off).
+In a terminal: `sudo python3 /opt/creator-root/root_helper.py check "apt-get
+install curl"`. Every check is in the audit log with its verdict; every saved
+change with the old and new settings and whether it loosened them.
+
+**Updating from 5b:** copy the new `root_helper.py` and the unit (step 1 and
+4 above), then `sudo systemctl daemon-reload && sudo systemctl restart
+creator-root-helper` (a restart switches root off).
+
 ## Kill switch
 
 ```sh
@@ -311,15 +364,18 @@ this user can't enter it (step 2's `setfacl`); or there's no socket
 creator-root-helper` for why it didn't start). No **Root** button at all
 means the folder isn't mounted, or you're not an admin.
 
-## Limits (5b)
+## Limits (5b, 5c)
 
 - **uid 1000 is also you on the host.** Your own programs can ask for the
   status, revoke, and try codes (five wrong ones lock it for 15 minutes).
   They can't switch root on without a code from your app.
-- **The 5b unit is locked down hard** (no network, no capabilities, read-only
+- **The unit is locked down hard** (no network, no capabilities, read-only
   system) because the helper does nothing as root yet. 5d loosens it on
   purpose, when it runs commands.
 - **Not verified on the real system:** the unit under systemd as root, the ACL
   through the read-only bind mount, and a code from a real authenticator app.
   The code check passes the RFC 6238 test values, and the unit passes
   `systemd-analyze verify`.
+- **Automatic apt installs are root-equivalent**: package scripts run as root,
+  so they trust your configured, signed repositories. Switch the form off if
+  you'd rather approve each install.

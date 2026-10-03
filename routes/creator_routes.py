@@ -374,6 +374,68 @@ def setup_creator_routes(creator_manager: CreatorManager) -> APIRouter:
         return await creator_root_helper.status()
 
     # ------------------------------------------------------------------
+    # The watchdog (Phase 5c). The root helper judges commands and keeps the
+    # settings; it decides whether a change loosens them (then it wants an
+    # authenticator code). These routes only pass requests on.
+    # ------------------------------------------------------------------
+
+    class RootCheckRequest(BaseModel):
+        command: str = Field(..., min_length=1, max_length=4000)
+
+    class WatchdogSaveRequest(BaseModel):
+        settings: dict
+        code: Optional[str] = Field(default=None, pattern=r"^[0-9]{6}$")
+
+    async def _ask_root(call, *args):
+        from src.creator_host_helper import HelperError
+        try:
+            return await call(*args)
+        except HelperError as e:
+            _root_unreachable(e)
+
+    @router.get("/api/creator/root/watchdog")
+    async def creator_root_watchdog(request: Request):
+        """The watchdog's settings, built-in refused list and limits."""
+        _require_root_user(request)
+        from src import creator_root_helper
+        reply = await _ask_root(creator_root_helper.watchdog)
+        if not reply.get("ok"):
+            raise HTTPException(502, reply.get("error") or "The root helper refused.")
+        reply.pop("ok", None)
+        reply.pop("type", None)
+        return reply
+
+    @router.post("/api/creator/root/watchdog")
+    async def creator_root_watchdog_save(body: WatchdogSaveRequest, request: Request):
+        """Save the watchdog's settings. 428 when the change loosens it and no
+        code was sent: send it again with a code from the authenticator app."""
+        user = _require_root_user(request)
+        from src import creator_root_helper
+        reply = await _ask_root(creator_root_helper.save_watchdog, body.settings, body.code)
+        logger.info("Creator watchdog settings: save by %s: %s", user,
+                    ("saved, loosened" if reply.get("loosened") else "saved") if reply.get("ok")
+                    else reply.get("reason") or "refused")
+        if not reply.get("ok"):
+            status = {"code_needed": 428, "locked": 429, "write_failed": 502}.get(reply.get("reason"), 400)
+            raise HTTPException(status, reply.get("error") or "The root helper refused.")
+        reply.pop("ok", None)
+        reply.pop("type", None)
+        return reply
+
+    @router.post("/api/creator/root/check")
+    async def creator_root_check(body: RootCheckRequest, request: Request):
+        """Which tier the watchdog puts a command in. Runs nothing, and a
+        refused verdict here doesn't switch root off."""
+        _require_root_user(request)
+        from src import creator_root_helper
+        reply = await _ask_root(creator_root_helper.check, body.command)
+        if not reply.get("ok"):
+            raise HTTPException(400, reply.get("error") or "The root helper refused.")
+        reply.pop("ok", None)
+        reply.pop("type", None)
+        return reply
+
+    # ------------------------------------------------------------------
     # Secrets section. Values are write-only: no route ever returns one.
     # ------------------------------------------------------------------
 
